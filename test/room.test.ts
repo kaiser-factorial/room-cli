@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -203,6 +204,49 @@ describe("Room", () => {
     expect(fakes.get("a")!.prompts.length).toBe(0);
     expect(room.transcript.entries.at(-1)).toMatchObject({ from: "b", kind: "pass" });
     expect(room.transcript.entries[1].text).toBe("your take");
+  });
+
+  it("commits the human's pending changes under their name before a seat's turn", async () => {
+    dir = mkdtempSync(join(tmpdir(), "room-g-"));
+    const git = (...a: string[]) => execFileSync("git", a, { cwd: dir, encoding: "utf8" }).trim();
+    git("init", "-q", "-b", "main");
+    writeFileSync(join(dir, "a.txt"), "seed\n");
+    git("-c", "user.name=t", "-c", "user.email=t@t", "add", "a.txt");
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "seed");
+    writeFileSync(join(dir, "a.txt"), "edited by the human before the room opened\n");
+    const ui = quietUI();
+    const room = await Room.open({
+      name: "g",
+      cwd: dir,
+      seats: [seats[0]],
+      human: "Corina",
+      ui,
+      makeSeat: (config, decide) => {
+        const f = new FakeSeat(config, [
+          () => {
+            // The seat edits a file during its turn.
+            writeFileSync(join(dir, "b.txt"), "written by seat a\n");
+            return "wrote b.txt";
+          },
+        ], decide);
+        return f;
+      },
+    });
+    await room.start();
+    expect(git("rev-parse", "--abbrev-ref", "HEAD")).toBe("room/g");
+    writeFileSync(join(dir, "a.txt"), "edited again between rounds\n");
+    await room.say("go");
+    const log = git("log", "--format=%an|%s").split("\n");
+    expect(log).toEqual([
+      "a|a: turn 4\n\nwrote b.txt".split("\n")[0],
+      "Corina|Corina: changes before a's turn",
+      "Corina|Corina: changes before the room opened",
+      "t|seed",
+    ]);
+    expect(git("show", "--stat", "--format=", "HEAD")).toContain("b.txt");
+    expect(git("show", "--stat", "--format=", "HEAD")).not.toContain("a.txt");
+    expect(room.transcript.entries.filter((e) => e.kind === "commit").length).toBe(3);
+    await room.stop();
   });
 
   it("forwards permission requests to the UI and persists allow-always as a rule", async () => {

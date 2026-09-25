@@ -90,6 +90,7 @@ export class Room {
     if (this.useGit) {
       this.state.branch = await ensureRoomBranch(this.opts.cwd, this.opts.name);
       ui.status(`git: on branch ${this.state.branch}, committing after every edit turn`);
+      await this.commitHumanChanges("changes before the room opened");
     }
     const decide = makeDecider({
       policyFor: (seat) => this.state.policy[seat],
@@ -140,7 +141,23 @@ export class Room {
   private async runRound(): Promise<void> {
     let seat: string | undefined;
     while (!this.stopped && (seat = this.scheduler.shift())) {
+      // Anything the human changed between turns is theirs, not the next seat's.
+      if (this.useGit) await this.commitHumanChanges(`changes before ${seat}'s turn`);
       await this.runTurn(seat);
+    }
+  }
+
+  /** Commit the working tree as the human, if dirty, so seat commits contain only seat changes. */
+  private async commitHumanChanges(why: string): Promise<void> {
+    try {
+      const commit = await commitTurn(this.opts.cwd, this.opts.human, `${this.opts.human}: ${why}`);
+      if (commit) {
+        const line = `${this.opts.human} committed ${commit.sha}: ${commit.stat}`;
+        this.opts.ui.status(line);
+        this.transcript.append("room", "commit", line);
+      }
+    } catch (err) {
+      this.opts.ui.status(`commit of ${this.opts.human}'s changes failed: ${(err as Error).message}`);
     }
   }
 
