@@ -19,23 +19,49 @@ Design", https://claude.ai/code/artifact/8624261e-8ed2-45ea-ad01-d8b06166e1e1
 | 5 Ink TUI | optional |
 | 6 parallel edits with worktrees | later |
 
-Tests: `npm test` in `packages/room`, 45 tests, all fake-seat based, run
-anywhere with Node. The live checks (`scripts/smoke*.ts`, `room doctor
---deep`) need the harness CLIs and their logins, which exist only on the
-owner's Mac.
+Tests: `npm test` in `packages/room`, 53 tests, run anywhere with Node.
+45 use in-process fake seats. 8 (`test/fake-harness.test.ts`) spawn real
+subprocesses that speak the real protocol, which covers what the live
+checks on the owner's Mac cover: handshake, modes, the permission round
+trip with diffs, command output, cancel, resume via `session/resume` and
+`session/load`, the doctor's verdicts, and the room end to end with a
+commit authored by a seat and a restart that reattaches every seat.
 
-## What the cloud can and cannot test
+## Emulating the harnesses in the cloud
 
-- Unit tests: yes.
-- `room doctor` shallow: only for harnesses installed there. The two Zed
-  adapters (`@agentclientprotocol/claude-agent-acp`, `@agentclientprotocol/codex-acp`)
-  install from npm; the Claude one runs on `ANTHROPIC_API_KEY` if present.
-  grok, hermes, pool, agy: Mac only.
-- Phase 4's ACP server: testable anywhere once there is a fake ACP agent
-  fixture. Build one with the SDK's `acp.agent()` (see
-  `node_modules/@agentclientprotocol/sdk/dist/examples/agent.js`) that
-  replies from a script and asks permission on demand; then a test can
-  spawn `room acp` with a roster of fake agents and drive it with `AcpSeat`.
+`test/fixtures/fake-agent.ts` is an ACP agent with switches for the quirks
+met on each real harness. `test/fixtures/index.ts` builds seat configs for
+it, so any test or a `.room.toml` can use it.
+
+| Switch | Emulates |
+| --- | --- |
+| `--modes` | claude / hermes: advertises modes, starts in `auto` (auto-approves) until the room sets `default` |
+| (none) | grok before the config fix: no modes, asks per edit |
+| `--auto-edit` | agy: writes without asking |
+| `--no-ids` | grok: no `messageId` on chunks |
+| `--resume` / `--load` | reattach via `session/resume`, or `session/load` with a replayed history |
+| `--start-delay <ms>` | hermes: slow startup |
+| `--fail-session <msg>` | pool without Docker: `session/new` fails with the detail only in error data |
+| `--fail-session auth` | a harness wanting a login (JSON-RPC -32000) |
+
+Directives in a prompt drive it (`>> say`, `>> edit <path> <text>`,
+`>> run`, `>> remember` / `>> recall`, `>> sleep`, `>> pass`,
+`>> mention <seat>`), and it understands the doctor's real prompt.
+`test/fixtures/fake-claude` is a CLI harness in Claude Code's headless
+argument and JSON shape, with resume, for the `cli` adapter.
+
+A finding from building it: the SDK turns a plain thrown `Error` into a
+bare "Internal error" on the wire, which is what pool and codex showed
+earlier. Detail travels only as `RequestError` data; `describeError` in
+`seat/acp.ts` folds it into messages now.
+
+Real harnesses in the cloud: the two Zed adapters install from npm and the
+Claude one runs on `ANTHROPIC_API_KEY` if present. grok, hermes, pool, agy:
+Mac only.
+
+Phase 4's ACP server can be tested here by spawning `room acp` with a
+roster of fake agents and driving it with `AcpSeat`, the same way
+`fake-harness.test.ts` drives seats.
 
 ## Phase 4 plan
 

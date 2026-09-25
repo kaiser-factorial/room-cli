@@ -7,7 +7,7 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AcpSeat, withTimeout } from "./seat/acp.js";
+import { AcpSeat, describeError, isAuthError, withTimeout } from "./seat/acp.js";
 import { CliSeat } from "./seat/cli.js";
 import { pickAskMode } from "./seat/modes.js";
 import type { PermissionRequestView, SeatConfig, SeatEvent } from "./seat/types.js";
@@ -151,7 +151,7 @@ async function checkSeat(config: SeatConfig, opts: DoctorOptions): Promise<Docto
     row.auth = info.authMethods.length === 0 ? "ok" : "unknown";
     log(`handshake ok: ${info.agentName ?? "?"} ${info.agentVersion ?? ""}`.trim());
   } catch (err) {
-    row.error = (err as Error).message;
+    row.error = describeError(err);
     row.stderr = seat.stderrTail().trim() || undefined;
     row.code = EXIT.SEAT_START;
     row.ms = Date.now() - started;
@@ -210,9 +210,8 @@ async function checkSeat(config: SeatConfig, opts: DoctorOptions): Promise<Docto
         }
         return true;
       } catch (err) {
-        const msg = (err as Error).message;
-        row.error = msg;
-        row.auth = /auth/i.test(msg) ? "needed" : row.auth;
+        row.error = describeError(err);
+        row.auth = isAuthError(err) ? "needed" : row.auth;
         row.code = row.auth === "needed" ? EXIT.AUTH : EXIT.PROTOCOL;
         row.deep!.forwarding = "failed";
         return false;

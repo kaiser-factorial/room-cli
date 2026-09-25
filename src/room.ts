@@ -9,7 +9,7 @@ import { commitTurn, ensureRoomBranch, headSha, headSubject, isRepo } from "./gi
 import { emptyPolicy, makeDecider, type Action, type HumanChoice, type Policy, type SeatPolicy } from "./permissions.js";
 import { buildPreamble, PASS } from "./preamble.js";
 import { parseAddress, scanMentions, Scheduler } from "./scheduler.js";
-import { withTimeout } from "./seat/acp.js";
+import { describeError, withTimeout } from "./seat/acp.js";
 import { createSeat } from "./seat/index.js";
 import { pickAskMode } from "./seat/modes.js";
 import type { PermissionDecider, PermissionRequestView, Seat, SeatConfig, SeatEvent } from "./seat/types.js";
@@ -289,6 +289,11 @@ export class Room {
     let s: string | undefined;
     while ((s = this.scheduler.shift())) names.push(s);
     ui.status(`parallel round: ${names.join(", ")}`);
+    for (const n of names) {
+      if (this.opts.seats.find((s) => s.name === n)?.adapter === "cli") {
+        ui.status(`${n} is a cli seat: its edits cannot be refused, only asked for in the prompt`);
+      }
+    }
     // Everyone answers this snapshot; afterwards each has seen up to here, plus its own reply.
     const snapshotLast = this.transcript.last;
     const prompts = names.map((n) => this.buildPrompt(n, true));
@@ -347,7 +352,7 @@ export class Room {
       );
     } catch (err) {
       await seat.cancel();
-      result.failure = (err as Error).message;
+      result.failure = describeError(err);
     }
     return result;
   }

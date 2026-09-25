@@ -346,6 +346,27 @@ function toolContent(content: acp.ToolCallContent[] | null | undefined): ToolCon
   return out.length ? out : undefined;
 }
 
+/**
+ * A JSON-RPC error's message is often just "Internal error"; the detail, when
+ * a harness sends any, is in `data`. Fold it in, and name the auth code.
+ */
+export function describeError(err: unknown): string {
+  const e = err as { message?: string; code?: number; data?: unknown };
+  let msg = e?.message ?? String(err);
+  if (e?.code === -32000 && !/auth/i.test(msg)) msg = `auth required: ${msg}`;
+  if (e?.data !== undefined && e.data !== null) {
+    const d = e.data as { message?: unknown; details?: unknown };
+    const detail = typeof d === "object" && (d.message ?? d.details) !== undefined ? String(d.message ?? d.details) : JSON.stringify(d);
+    if (detail && !msg.includes(detail)) msg = `${msg}: ${detail}`;
+  }
+  return msg;
+}
+
+export function isAuthError(err: unknown): boolean {
+  const e = err as { message?: string; code?: number };
+  return e?.code === -32000 || /auth/i.test(e?.message ?? "");
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }

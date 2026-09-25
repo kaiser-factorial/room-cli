@@ -1,0 +1,12 @@
+#!/bin/bash
+# Runs the fake CLI harness with Claude Code's argument shape. See fake-cli.ts.
+# The room puts the workspace .bin dirs on PATH for seats; fall back to the hoisted one.
+here="$(cd "$(dirname "$0")" && pwd)"
+if command -v tsx >/dev/null 2>&1; then
+  exec tsx "$here/fake-cli.ts" "$@"
+fi
+for cand in "$here/../../node_modules/.bin/tsx" "$here/../../../../node_modules/.bin/tsx"; do
+  if [ -x "$cand" ]; then exec "$cand" "$here/fake-cli.ts" "$@"; fi
+done
+echo "fake-claude: tsx not found" >&2
+exit 127

@@ -191,6 +191,16 @@ command = "antigravity-acp"
 AGY_BIN = "/opt/homebrew/bin/agy"
 ```
 
+## Tests without harnesses
+
+`npm test` runs 53 tests with no harness or login. Eight of them spawn
+`test/fixtures/fake-agent.ts`, a real ACP agent with switches for each
+harness quirk (`--modes`, `--auto-edit`, `--no-ids`, `--resume`, `--load`,
+`--start-delay`, `--fail-session`), and `test/fixtures/fake-claude`, a CLI
+harness in Claude Code's headless shape. They cover the permission round
+trip, diffs, cancel, resume across a restart, the doctor's verdicts, and
+the room end to end. Details in HANDOFF.md.
+
 ## What phase 0 found
 
 | Seat | ACP route | Round trip | Notes |
