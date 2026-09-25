@@ -80,7 +80,7 @@ function hintFor(seat: string, row: DoctorRow): string | undefined {
   const preview = `${row.deep?.allow?.replyPreview ?? ""} ${row.deep?.deny?.replyPreview ?? ""}`;
   if (/usage limit|quota|rate limit/i.test(preview)) return "harness reports a usage limit; try later or use API-key auth";
   if (seat === "grok" && fwd === "edits-without-asking") {
-    return "grok inherits Claude Code's defaultMode=auto; add `[permission] ask = [\"Write(*)\", \"Edit(*)\", \"Bash(*)\"]` to ~/.grok/config.toml";
+    return "grok auto-approves; in ~/.grok/config.toml set `[ui] permission_mode = \"default\"` and add `[permission] ask = [\"Write(*)\", \"Edit(*)\", \"Bash(*)\"]`";
   }
   if (seat === "agy" && fwd === "edits-without-asking") {
     return "the antigravity-acp adapter always runs agy with --dangerously-skip-permissions; treat agy as a sandbox-only seat";

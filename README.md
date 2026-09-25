@@ -66,7 +66,7 @@ AGY_BIN = "/opt/homebrew/bin/agy"
 | --- | --- | --- | --- |
 | claude | `@agentclientprotocol/claude-agent-acp` | ok | Reuses the Claude Code login. Starts in whatever `defaultMode` your Claude settings set (`auto` here), so the room switches it to `default` with `session/set_mode`. |
 | codex | `@agentclientprotocol/codex-acp` | blocked | Handshake and sessions work; turns fail with the ChatGPT usage limit. Its ask mode is `read-only` ("Ask for approval"). |
-| grok | `grok agent stdio` | ok, with config | Inherits Claude Code's `defaultMode=auto` and auto-approves. Add `[permission] ask = ["Write(*)", "Edit(*)", "Bash(*)"]` to `~/.grok/config.toml`. Two seats get separate sessions. |
+| grok | `grok agent stdio` | ok, with config | Auto-approves unless `~/.grok/config.toml` has both `[ui] permission_mode = "default"` and `[permission] ask = ["Write(*)", "Edit(*)", "Bash(*)"]`. `always-approve` in the config overrides ask rules, and without ask rules grok inherits Claude Code's `defaultMode=auto`. Two seats get separate sessions. |
 | hermes | `hermes acp` | ok | Loads every configured MCP server at startup, so it is the slowest to come up. |
 | pool | `pool acp --sandbox disabled` | ok | The Docker sandbox fails when the daemon is down, which is what hung the Laguna daemon. |
 | agy | `antigravity-acp` (community) | never asks | The adapter always runs agy with `--dangerously-skip-permissions`. Sandbox-only seat until agy grows a headless permission channel. |
