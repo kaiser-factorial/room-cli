@@ -102,6 +102,16 @@ working directory, and gives every seat a **desk**: a git worktree at
   is holding.
 - A merge that conflicts is aborted, the work stays on the desk, and the
   seat is told on its next turn to merge the trunk and resolve it.
+- **Background work.** `/bg grok build the parser`, or a seat ending its
+  reply with `[background] <what it will do>`, sends that seat on working
+  in its desk while the room goes on: it leaves the rotation (hand-offs to
+  it are skipped, `@grok` says it is busy), its progress streams live
+  behind a gutter in its colour, `▌ grok (bg)`, whole lines only so it
+  never splits the active reply, and its permission questions come to you
+  one at a time, over your prompt, which comes back afterwards with what
+  you had typed. When it finishes its reply is posted and its work lands.
+  `/stop grok` cancels; what it did stays held on its desk for `/land`.
+  Background turns may run an hour.
 - `--no-desks` goes back to one shared directory, where the room commits
   after each turn and seats are told not to touch git.
 

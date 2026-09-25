@@ -140,10 +140,15 @@ before desks starts its seats in fresh sessions in their desks.
 Decided with Corina: land automatically after every turn; seats commit
 for themselves and the room commits what they leave; seats can hold.
 
-Next: background turns (`/bg <seat> <task>`): a seat works in its desk
-while the conversation goes on, skipped in rounds, its permission prompts
-queued to the human, and a room note when it finishes. Needs the REPL's
-line source to stack a permission prompt over the human's prompt.
+Background turns (`Room.startBackground`): from `/bg <seat> <task>` or a
+seat's `[background] <task>` line. The seat leaves the rotation, its
+events go to `RoomUI.backgroundEvent` (the REPL prints whole lines behind
+a coloured gutter), its reply is recorded when it finishes and its desk
+lands; a stopped or failed one is held. `LineSource` stacks prompts so a
+background seat's permission question can sit over the human's prompt;
+`ReplUI.askHuman` asks one question at a time. `stopBackground` keeps
+cancelling until the turn ends, since a stop can arrive while the desk is
+still syncing, before the seat has the prompt.
 
 ## Known warts
 

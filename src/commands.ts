@@ -10,6 +10,8 @@ export const COMMAND_HELP = `  /seats                 seats, modes, and what is 
   /mode <seat> [id]      show or set a seat's session mode
   /unbench <seat>        bring back a seat benched after failing (so does @seat)
   /land <seat>           merge a seat's desk into the trunk now, even if it is holding
+  /bg <seat> <task>      the seat works on it in its desk while the room goes on
+  /stop <seat>           cancel a seat's background work
   /perm <seat>           show a seat's policy
   /perm <seat> allow|ask|deny <pattern>   add a rule (kind like edit, or title glob like "Write *")
   /unperm <seat> <pattern>                remove a rule`;
@@ -28,10 +30,25 @@ export async function runCommand(room: Room, text: string, out: (line: string) =
       for (const name of room.seatNames) {
         const modes = room.modesOf(name);
         const mode = room.state.modes[name] ?? modes?.current ?? "-";
-        const benched = (room.benched.has(name) ? "  (benched)" : "") + (room.holding.has(name) ? "  (holding)" : "");
+        const benched =
+          (room.benched.has(name) ? "  (benched)" : "") +
+          (room.holding.has(name) ? "  (holding)" : "") +
+          (room.background.has(name) ? "  (background)" : "");
         out(`  ${name.padEnd(8)} mode ${mode.padEnd(12)} session ${room.state.sessions[name] ?? "-"}${benched}`);
       }
       if (room.scheduler.pending.length) out(`  queued: ${room.scheduler.pending.join(", ")}`);
+      return;
+    }
+    case "/bg": {
+      const [seat, ...task] = args;
+      if (!seat || !room.seatNames.includes(seat) || task.length === 0) return out(`  usage: /bg <seat> <task>`);
+      room.startBackground(seat, task.join(" "));
+      return;
+    }
+    case "/stop": {
+      const [seat] = args;
+      if (!seat || !room.seatNames.includes(seat)) return out(`  usage: /stop <seat>; in the background: ${[...room.background.keys()].join(", ") || "none"}`);
+      if (!(await room.stopBackground(seat))) out(`  ${seat} is not working in the background`);
       return;
     }
     case "/land": {

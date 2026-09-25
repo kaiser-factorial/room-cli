@@ -7,7 +7,7 @@ import { basename, join } from "node:path";
 import { ConfigError, validateSeatName } from "./config.js";
 import { commitTurn, ensureRoomBranch, ensureWorktree, headSha, headSubject, isRepo, mergeRef } from "./git.js";
 import { emptyPolicy, makeDecider, type Action, type HumanChoice, type Policy, type SeatPolicy } from "./permissions.js";
-import { buildPreamble, HOLD, PASS } from "./preamble.js";
+import { BACKGROUND, buildPreamble, HOLD, PASS } from "./preamble.js";
 import { parseAddress, scanMentions, Scheduler } from "./scheduler.js";
 import { describeError, withTimeout } from "./seat/acp.js";
 import { createSeat } from "./seat/index.js";
@@ -18,6 +18,8 @@ import { Activity } from "./activity.js";
 
 export interface RoomUI {
   seatEvent(seat: string, ev: SeatEvent): void;
+  /** A background turn's events, live. Without it they go to `seatEvent`. */
+  backgroundEvent?(seat: string, ev: SeatEvent): void;
   askHuman(req: PermissionRequestView): Promise<HumanChoice>;
   status(line: string): void;
 }
@@ -33,6 +35,8 @@ export interface RoomOptions {
   /** Where the transcript and state live. Default: `<cwd>/.room/<name>`. */
   stateDir?: string;
   turnTimeoutMs?: number;
+  /** Background turns are long by design. Default: an hour. */
+  backgroundTimeoutMs?: number;
   /** Commit after edit turns on a `room/<name>` branch. Default: true when cwd is a repo. */
   git?: boolean;
   /**
@@ -63,6 +67,15 @@ export interface RoomState {
 
 /** Errors that retrying cannot fix before something outside the room changes. */
 const BENCH_NOW = /rate.?limit|session limit|usage limit|quota|auth(entication)? required|log ?in/i;
+
+/** The task in a reply whose first or last line is `[background] <task>`, else undefined. */
+export function backgroundTask(text: string): string | undefined {
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  for (const l of [lines.at(-1), lines[0]]) {
+    if (l?.startsWith(BACKGROUND)) return l.slice(BACKGROUND.length).trim();
+  }
+  return undefined;
+}
 
 /** A reply whose first or last line is `[hold]`. */
 export function wantsHold(text: string): boolean {
@@ -104,6 +117,10 @@ export class Room {
   private useDesks = false;
   /** Trunk merges run one at a time, whichever seat finishes first. */
   private trunkLock: Promise<unknown> = Promise.resolve();
+  /** Seats working in the background, out of the rotation, and their running turn. */
+  readonly background = new Map<string, Promise<void>>();
+  /** Background work asked to stop, possibly before its turn has started. */
+  private readonly stopRequests = new Set<string>();
   /** Seats whose work stays on their desk: they ended their last turn with `[hold]`. */
   readonly holding = new Set<string>();
   /** What happened to a seat's desk since its last turn, told to it on its next. */
@@ -310,7 +327,12 @@ export class Room {
     this.handoffs = 0;
     // Addressing a benched seat is asking for it back.
     for (const t of targets) if (this.benched.has(t)) this.unbench(t);
-    const wanted = targets.length ? targets : this.activeSeats();
+    for (const t of targets.filter((x) => this.background.has(x))) {
+      this.opts.ui.status(`${t} is working in the background; it reads this when it finishes (/stop ${t} to cancel)`);
+    }
+    const addressed = targets.filter((t) => !this.background.has(t));
+    if (targets.length && addressed.length === 0) return { cancelled: false };
+    const wanted = targets.length ? addressed : this.activeSeats();
     if (wanted.length === 0) {
       this.opts.ui.status(`every seat is benched; @name one, or /unbench, to bring it back`);
       return { cancelled: false };
@@ -334,9 +356,9 @@ export class Room {
     return this.runRound();
   }
 
-  /** Seats not benched, in roster order. */
+  /** Seats in the rotation: not benched, not working in the background. In roster order. */
   activeSeats(): string[] {
-    return this.seatNames.filter((s) => !this.benched.has(s));
+    return this.seatNames.filter((s) => !this.benched.has(s) && !this.background.has(s));
   }
 
   unbench(seat: string): boolean {
@@ -358,7 +380,91 @@ export class Room {
     if (!this.busy) return;
     this.cancelRequested = true;
     this.scheduler.clear();
-    await Promise.all([...this.active].map((n) => this.seats.get(n)?.cancel().catch(() => undefined)));
+    // The round's seats only: background work goes on (`/stop` ends that).
+    const round = [...this.active].filter((n) => !this.background.has(n));
+    await Promise.all(round.map((n) => this.seats.get(n)?.cancel().catch(() => undefined)));
+  }
+
+  /**
+   * A seat works on `task` in its desk while the room goes on without it:
+   * out of the rotation, its events shown live, its reply posted and its
+   * work landed when it finishes. From the human (`/bg`), or from a seat
+   * ending its reply with `[background] <task>`.
+   */
+  startBackground(name: string, task: string, from: "human" | "seat" = "human"): boolean {
+    const { ui } = this.opts;
+    if (!this.seats.has(name)) throw new Error(`no such seat: ${name}`);
+    if (!this.useDesks) {
+      ui.status(`background work needs desks (a git repo, without --no-desks): ${name} would be editing the directory everyone shares`);
+      return false;
+    }
+    if (this.background.has(name)) {
+      ui.status(`${name} is already working in the background`);
+      return false;
+    }
+    if (this.active.has(name)) {
+      ui.status(`${name} is mid-turn; send it to the background after`);
+      return false;
+    }
+    this.scheduler.remove(name);
+    if (from === "human") this.transcript.append(this.opts.human, "message", `@${name} (in the background) ${task}`);
+    else this.transcript.append("room", "system", `${name} went on working in the background: ${task}`);
+    ui.status(`${name} is working in the background: ${task} (/stop ${name} to cancel)`);
+    const run = this.runBackground(name, task).finally(() => this.background.delete(name));
+    this.background.set(name, run);
+    return true;
+  }
+
+  /** Cancel a seat's background work. Its reply so far is recorded; its desk keeps the work. */
+  async stopBackground(name: string): Promise<boolean> {
+    const run = this.background.get(name);
+    if (!run) return false;
+    this.stopRequests.add(name);
+    // The turn may not have reached the seat yet (its desk syncs first): cancel until it ends.
+    let done = false;
+    void run.finally(() => (done = true));
+    while (!done) {
+      await this.seats.get(name)?.cancel().catch(() => undefined);
+      await Promise.race([run, new Promise((r) => setTimeout(r, 250))]);
+    }
+    this.stopRequests.delete(name);
+    return true;
+  }
+
+  private async runBackground(name: string, task: string): Promise<void> {
+    const { ui } = this.opts;
+    await this.syncDesk(name);
+    const snapshot = this.transcript.last;
+    const prompt =
+      this.buildPrompt(name, false) +
+      `\n\n[room]: You are working in the background on: ${task}\n` +
+      `The conversation goes on without you, and ${this.opts.human} sees your progress. ` +
+      `Keep going until it is done; your reply is posted when you finish.`;
+    const show = (ev: SeatEvent) => (ui.backgroundEvent ? ui.backgroundEvent(name, ev) : ui.seatEvent(name, ev));
+    const result = this.stopRequests.has(name)
+      ? { text: "", stopReason: "cancelled", activity: new Activity() }
+      : await this.collectTurn(name, prompt, show, this.opts.backgroundTimeoutMs ?? 60 * 60_000);
+    const entry = this.recordTurn(name, result);
+    // It saw the room up to when it left, and not what was said while it worked.
+    this.state.cursors[name] = snapshot;
+    if (result.stopReason === "cancelled" || result.failure) {
+      // Half-done work stays on the desk; the human decides with /land.
+      this.holding.add(name);
+      const line = `${name}'s background work ${result.failure ? "failed" : "was stopped"}; what it did stays on its desk (/land ${name} to bring it in)`;
+      ui.status(line);
+      this.transcript.append("room", "system", line);
+    } else {
+      ui.status(`${name} finished its background work`);
+      await this.landDesk(name, entry, result.text);
+    }
+    this.saveState();
+    if (!this.stopped && entry.kind === "message") this.maybeBackground(name, entry.text);
+  }
+
+  /** A reply ending `[background] <task>` sends its seat on working. */
+  private maybeBackground(name: string, text: string): void {
+    const task = backgroundTask(text);
+    if (task !== undefined) this.startBackground(name, task || "the work it described", "seat");
   }
 
   private passedWithNothingNew(seat: string): boolean {
@@ -386,7 +492,10 @@ export class Room {
           // Anything the human changed between turns is theirs, not the next seat's.
           if (this.useGit) await this.commitHumanChanges(`changes before ${seat}'s turn`);
           const entry = await this.runTurn(seat);
-          if (entry?.kind === "message" && !this.cancelRequested) this.handOff(seat, entry.text);
+          if (entry?.kind === "message" && !this.cancelRequested) {
+            this.maybeBackground(seat, entry.text);
+            this.handOff(seat, entry.text);
+          }
         }
       }
       if (this.cancelRequested) {
@@ -417,6 +526,10 @@ export class Room {
     for (const m of mentions.filter((x) => x.toLowerCase() !== human).reverse()) {
       if (this.benched.has(m)) {
         ui.status(`${from} → ${m}, but ${m} is benched; @${m} to bring it back`);
+        continue;
+      }
+      if (this.background.has(m)) {
+        ui.status(`${from} → ${m}, but ${m} is working in the background; it reads this when it finishes`);
         continue;
       }
       // Moving an already-queued seat forward is free; adding a turn counts.
@@ -464,7 +577,11 @@ export class Room {
     for (const r of replies) this.state.cursors[r.seat] = snapshotLast;
     this.saveState();
     if (this.cancelRequested) return;
-    for (const r of replies) if (r.entry.kind === "message") this.handOff(r.seat, r.entry.text);
+    for (const r of replies) {
+      if (r.entry.kind !== "message") continue;
+      this.maybeBackground(r.seat, r.entry.text);
+      this.handOff(r.seat, r.entry.text);
+    }
   }
 
   private buildPrompt(name: string, parallel: boolean): string {
@@ -497,7 +614,12 @@ export class Room {
     );
   }
 
-  private async collectTurn(name: string, prompt: string, emit: (ev: SeatEvent) => void): Promise<TurnResult> {
+  private async collectTurn(
+    name: string,
+    prompt: string,
+    emit: (ev: SeatEvent) => void,
+    timeoutMs = this.opts.turnTimeoutMs ?? 10 * 60_000,
+  ): Promise<TurnResult> {
     const seat = this.seats.get(name);
     if (!seat) throw new Error(`no such seat: ${name}`);
     const result: TurnResult = { text: "", stopReason: "end_turn", activity: new Activity() };
@@ -512,7 +634,7 @@ export class Room {
             if (ev.type === "stop") result.stopReason = ev.stopReason;
           }
         })(),
-        this.opts.turnTimeoutMs ?? 10 * 60_000,
+        timeoutMs,
         `${name}: turn timed out`,
       );
     } catch (err) {
@@ -742,6 +864,7 @@ export class Room {
 
   async stop(): Promise<void> {
     this.stopped = true;
+    await Promise.all([...this.background.keys()].map((n) => this.stopBackground(n)));
     await Promise.all([...this.seats.values()].map((s) => s.stop().catch(() => undefined)));
     this.saveState();
   }

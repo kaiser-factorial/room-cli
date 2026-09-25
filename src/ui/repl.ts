@@ -38,7 +38,13 @@ export function sanitizeForTerminal(text: string): string {
 /** Queued lines from a readline interface. `ask` resolves null when stdin closes. */
 export class LineSource {
   private queue: string[] = [];
-  private waiting?: (line: string | null) => void;
+  /**
+   * Prompts on screen, innermost last. A permission question from a seat
+   * working in the background can arrive while the human's own prompt is
+   * up: it goes on top, and when answered the prompt beneath comes back
+   * with whatever had been typed into it.
+   */
+  private readonly stack: Array<{ prompt: string; resolve: (line: string | null) => void; typed?: string }> = [];
   private closed = false;
 
   constructor(
@@ -46,36 +52,55 @@ export class LineSource {
     private readonly out: NodeJS.WritableStream = process.stdout,
   ) {
     rl.on("line", (line) => {
-      if (this.waiting) {
-        const w = this.waiting;
-        this.waiting = undefined;
-        w(line);
-      } else this.queue.push(line);
+      const top = this.stack.pop();
+      if (!top) {
+        this.queue.push(line);
+        return;
+      }
+      top.resolve(line);
+      const below = this.stack.at(-1);
+      if (below) {
+        this.rl.setPrompt(below.prompt);
+        this.rl.prompt();
+        if (below.typed) this.rl.write(below.typed);
+        below.typed = undefined;
+      }
     });
     rl.on("close", () => {
       this.closed = true;
-      this.waiting?.(null);
-      this.waiting = undefined;
+      for (const p of this.stack.splice(0)) p.resolve(null);
     });
   }
 
   ask(prompt: string): Promise<string | null> {
-    if (this.queue.length) {
+    // Lines typed ahead answer the human's own prompt, never a seat's question on top of it.
+    if (this.queue.length && this.stack.length === 0) {
       const line = this.queue.shift()!;
       this.out.write(`${prompt}${line}\n`);
       return Promise.resolve(line);
     }
     if (this.closed) return Promise.resolve(null);
-    this.rl.setPrompt(prompt);
-    this.rl.prompt();
+    const below = this.stack.at(-1);
+    if (below) {
+      // Keep what was typed below, and clear it from the line for the question on top.
+      if (this.rl.terminal) {
+        below.typed = this.rl.line;
+        this.rl.write(null, { ctrl: true, name: "e" });
+        this.rl.write(null, { ctrl: true, name: "u" });
+        readline.cursorTo(this.out, 0);
+        readline.clearLine(this.out, 0);
+      }
+    }
     return new Promise((resolve) => {
-      this.waiting = resolve;
+      this.stack.push({ prompt, resolve });
+      this.rl.setPrompt(prompt);
+      this.rl.prompt();
     });
   }
 
   /** Whether a prompt is on screen, waiting for the human. */
   get prompting(): boolean {
-    return this.waiting !== undefined;
+    return this.stack.length > 0;
   }
 
   /**
@@ -126,6 +151,10 @@ export class ReplUI implements RoomUI {
   showThoughts = true;
   /** The seat whose folded "is thinking" line is already shown. */
   private thinking?: string;
+  /** Background seats' unfinished lines (`seat`, and `seat#thought`), printed whole. */
+  private readonly bgPartial = new Map<string, string>();
+  /** Permission questions one at a time, whichever seat asks. */
+  private asking: Promise<unknown> = Promise.resolve();
 
   constructor(
     private readonly lines: LineSource,
@@ -153,14 +182,81 @@ export class ReplUI implements RoomUI {
     }
   }
 
-  /** A seat's name in its own colour. */
-  seatName(seat: string): string {
+  private colourOf(seat: string): (t: string) => string {
     let c = this.colours.get(seat);
     if (!c) {
       c = this.style.colour(SEAT_COLOURS[this.colours.size % SEAT_COLOURS.length]);
       this.colours.set(seat, c);
     }
-    return c(seat);
+    return c;
+  }
+
+  /** A seat's name in its own colour. */
+  seatName(seat: string): string {
+    return this.colourOf(seat)(seat);
+  }
+
+  /**
+   * A seat working in the background, live: every line behind a gutter in
+   * the seat's colour, whole lines only, so it never splits a reply from the
+   * seat whose turn it is.
+   */
+  backgroundEvent(seat: string, ev: SeatEvent): void {
+    const { dim } = this.style;
+    switch (ev.type) {
+      case "text":
+        this.bgBuffer(seat, seat, sanitizeForTerminal(ev.text), (t) => t);
+        break;
+      case "thought":
+        if (this.showThoughts) this.bgBuffer(seat, `${seat}#thought`, sanitizeForTerminal(ev.text), dim);
+        break;
+      case "tool_call":
+        this.bgFlush(seat);
+        this.bgLine(seat, dim(`· ${sanitizeForTerminal(ev.title)}${ev.kind ? ` [${ev.kind}]` : ""}`));
+        for (const l of renderToolContent(ev.content, "  ")) this.bgLine(seat, dim(sanitizeForTerminal(l)));
+        break;
+      case "tool_update":
+        if (ev.content && ev.status !== "pending" && ev.status !== "in_progress") {
+          this.bgFlush(seat);
+          if (ev.title) this.bgLine(seat, dim(`· ${sanitizeForTerminal(ev.title)}${ev.status === "failed" ? " (failed)" : ""}`));
+          for (const l of renderToolContent(ev.content, "  ")) this.bgLine(seat, dim(sanitizeForTerminal(l)));
+        } else if (ev.status === "failed") {
+          this.bgFlush(seat);
+          this.bgLine(seat, dim(`· tool failed${ev.title ? `: ${sanitizeForTerminal(ev.title)}` : ""}`));
+        }
+        break;
+      case "stop":
+        this.bgFlush(seat);
+        break;
+      default:
+        break;
+    }
+  }
+
+  private bgBuffer(seat: string, key: string, text: string, style: (t: string) => string): void {
+    if (key === seat) this.bgFlushKey(seat, `${seat}#thought`, this.style.dim);
+    else this.bgFlushKey(seat, seat, (t) => t);
+    const parts = ((this.bgPartial.get(key) ?? "") + text).split("\n");
+    this.bgPartial.set(key, parts.pop()!);
+    for (const p of parts) this.bgLine(seat, style(p));
+  }
+
+  private bgFlushKey(seat: string, key: string, style: (t: string) => string): void {
+    const rest = this.bgPartial.get(key);
+    this.bgPartial.delete(key);
+    if (rest?.trim()) this.bgLine(seat, style(rest));
+  }
+
+  private bgFlush(seat: string): void {
+    this.bgFlushKey(seat, `${seat}#thought`, this.style.dim);
+    this.bgFlushKey(seat, seat, (t) => t);
+  }
+
+  private bgLine(seat: string, line: string): void {
+    this.newline();
+    this.out.write(`${this.colourOf(seat)(`▌ ${seat}`)} ${this.style.dim("(bg)")} ${line}\n`);
+    this.lineStart = true;
+    this.speaker = undefined;
   }
 
   /** The human just ended a line (the terminal echoed it, not us): the next block needs its gap. */
@@ -264,7 +360,13 @@ export class ReplUI implements RoomUI {
     for (const line of renderToolContent(content)) this.out.write(this.style.dim(sanitizeForTerminal(line)) + "\n");
   }
 
-  async askHuman(req: PermissionRequestView): Promise<HumanChoice> {
+  askHuman(req: PermissionRequestView): Promise<HumanChoice> {
+    const run = this.asking.then(() => this.askOne(req));
+    this.asking = run.catch(() => undefined);
+    return run;
+  }
+
+  private async askOne(req: PermissionRequestView): Promise<HumanChoice> {
     this.gap();
     this.speaker = undefined;
     this.out.write(`${this.style.bold("?")} ${this.seatName(req.seat)} wants: ${sanitizeForTerminal(req.title)}${req.kind ? ` [${req.kind}]` : ""}\n`);
