@@ -16,6 +16,11 @@ export interface SeatConfig {
   model?: string;
   /** Role preset id from the web app's roles.ts, applied in the preamble. */
   role?: string;
+  /** Persona text appended to the preamble, or a file holding it (e.g. a SOUL.md). */
+  prompt?: string;
+  promptFile?: string;
+  /** For the cli adapter: which recipe. Defaults to the command's basename. */
+  cli?: string;
   /** Session mode to set at session start, when the agent advertises modes. Default: the one that asks. */
   mode?: string;
   /** Room policy: tool kinds or title patterns. Deny beats ask beats allow. */

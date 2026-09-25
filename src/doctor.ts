@@ -8,6 +8,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AcpSeat, withTimeout } from "./seat/acp.js";
+import { CliSeat } from "./seat/cli.js";
 import { pickAskMode } from "./seat/modes.js";
 import type { PermissionRequestView, SeatConfig, SeatEvent } from "./seat/types.js";
 import { EXIT, type ExitCode, worst } from "./exit-codes.js";
@@ -122,11 +123,7 @@ async function checkSeat(config: SeatConfig, opts: DoctorOptions): Promise<Docto
     code: EXIT.OK,
   };
 
-  if (config.adapter !== "acp") {
-    row.error = `adapter "${config.adapter}" is not implemented yet`;
-    row.code = EXIT.CONFIG;
-    return row;
-  }
+  if (config.adapter === "cli") return checkCliSeat(config, row, opts, started, log);
 
   // Deep mode records every request and answers by policy; shallow mode never sees one.
   let policy: "allow" | "deny" = "allow";
@@ -250,6 +247,62 @@ async function checkSeat(config: SeatConfig, opts: DoctorOptions): Promise<Docto
 
   await seat.stop();
   row.stderr = seat.stderrTail().trim() || undefined;
+  row.ms = Date.now() - started;
+  return row;
+}
+
+/**
+ * A CLI seat has no handshake and never forwards permissions. The check is
+ * one headless turn: does the harness reply, and does it hand back a
+ * session id for resume.
+ */
+async function checkCliSeat(
+  config: SeatConfig,
+  row: DoctorRow,
+  opts: DoctorOptions,
+  started: number,
+  log: (m: string) => void,
+): Promise<DoctorRow> {
+  let seat: CliSeat;
+  try {
+    seat = new CliSeat(config, async () => "cancel");
+  } catch (err) {
+    row.error = (err as Error).message;
+    row.code = EXIT.CONFIG;
+    return row;
+  }
+  row.command = [config.command, ...seat.recipe.args({ prompt: "<prompt>", cwd: ".", scratchFile: "<file>" })].join(" ");
+  const scratch = mkdtempSync(join(tmpdir(), `room-doctor-${config.name}-`));
+  try {
+    await seat.newSession(scratch);
+    log(`one headless turn via recipe ${seat.recipe.id}`);
+    let text = "";
+    await withTimeout(
+      (async () => {
+        for await (const ev of seat.prompt("Reply with exactly one word: pong")) if (ev.type === "text") text += ev.text;
+      })(),
+      opts.promptTimeoutMs,
+      `${config.name}: turn timed out`,
+    );
+    row.started = true;
+    row.agent = `${seat.recipe.id} (cli)`;
+    row.loadSession = Boolean(seat.sessionId);
+    row.auth = /pong/i.test(text) ? "ok" : "unknown";
+    if (!/pong/i.test(text)) row.error = `unexpected reply: ${text.slice(0, 120)}`;
+    row.code = row.error ? EXIT.PROTOCOL : EXIT.OK;
+    if (opts.deep) {
+      row.deep = { forwarding: "skipped", sessionId: seat.sessionId };
+      row.hint = `cli adapter never forwards permissions; runs unattended with ${seat.recipe.unattended}`;
+    }
+    log(`reply: ${text.trim().slice(0, 60)} session=${seat.sessionId ?? "none"}`);
+  } catch (err) {
+    row.error = (err as Error).message;
+    row.code = EXIT.SEAT_START;
+  } finally {
+    await seat.stop();
+    row.stderr = seat.stderrTail().trim() || undefined;
+    if (!opts.keepScratch) rmSync(scratch, { recursive: true, force: true });
+  }
   row.ms = Date.now() - started;
   return row;
 }

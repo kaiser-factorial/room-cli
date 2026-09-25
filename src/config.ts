@@ -34,6 +34,14 @@ export function defaultRoster(): Roster {
       // The community adapter downloads its own agy unless told where ours is.
       env: process.env.AGY_BIN ? {} : { AGY_BIN: findOnPath("agy") ?? "agy" },
     },
+    // Laguna: pool wearing its journal identity.
+    {
+      name: "laguna",
+      adapter: "acp",
+      command: "pool",
+      args: ["acp", "--sandbox", "disabled"],
+      promptFile: join(homedir(), "Projects", "AGENT_JOURNAL", "laguna", "SOUL.md"),
+    },
   ];
   return { seats, source: "built-in defaults" };
 }
@@ -83,6 +91,9 @@ export function parseRoster(text: string, source: string): SeatConfig[] {
       env: optStrMap(s.env, `${source}: seats[${i}].env`),
       model: typeof s.model === "string" ? s.model : undefined,
       role: typeof s.role === "string" ? s.role : undefined,
+      prompt: typeof s.prompt === "string" ? s.prompt : undefined,
+      promptFile: typeof s.promptFile === "string" ? s.promptFile : undefined,
+      cli: typeof s.cli === "string" ? s.cli : undefined,
       mode: typeof s.mode === "string" ? s.mode : undefined,
       allow: optStrArray(s.allow, `${source}: seats[${i}].allow`),
       ask: optStrArray(s.ask, `${source}: seats[${i}].ask`),

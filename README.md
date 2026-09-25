@@ -9,8 +9,9 @@ context window; the room holds only the transcript and the session ids. When
 a seat wants to do something gated, its `session/request_permission` is
 forwarded to you. Nothing is auto-approved unless a seat's own config says so.
 
-Design doc: *Joint Session CLI Design* (Claude Docs). Phases 0 and 1 are
-done: the doctor, and a sequential room with a streaming REPL.
+Design doc: *Joint Session CLI Design* (Claude Docs). Phases 0 to 2 are
+done: the doctor, a sequential room with a streaming REPL, and the CLI
+fallback adapter.
 
 ## Commands
 
@@ -75,6 +76,32 @@ the config. grok and pool advertise none, so their config files are the lever.
 /mode claude                     list modes, current marked
 /mode claude acceptEdits
 ```
+
+### Personas
+
+A seat can carry an identity on top of its role: `prompt` is inline text,
+`promptFile` is a file such as one of the `SOUL.md` files in
+`~/Projects/AGENT_JOURNAL/<agent>/`. Both are appended to the preamble on the
+seat's first turn. The default roster's `laguna` seat is pool wearing
+`AGENT_JOURNAL/laguna/SOUL.md`.
+
+### The CLI fallback adapter
+
+`adapter = "cli"` runs a harness process per turn instead of an ACP session,
+resumes by the session id the harness returns, and parses its JSON output.
+No streaming, and no forwarded permissions: the recipe's unattended flags
+decide what the harness may do, and the room policy never sees a request.
+Use it when a seat's ACP route breaks, or for a harness with no ACP route.
+
+| Recipe | Runs | Resume | Unattended with |
+| --- | --- | --- | --- |
+| claude | `claude -p --output-format json` | `--resume <id>` | `--permission-mode acceptEdits` |
+| grok | `grok -p <prompt> --output-format json` | `-r <id>` | `--always-approve`: with ask rules in its config, headless grok silently drops writes under any other setting while still claiming it edited. Unsandboxed, so prefer grok over ACP |
+| agy | `agy --print=<prompt> --output-format json` | `--conversation <id>` | `--mode accept-edits`; headless agy never asks anyway |
+| codex | `codex exec --json -o <file>` | `codex exec resume <id>` | `--sandbox workspace-write` |
+
+The recipe is picked from `cli = "..."` or the command's basename. `args`
+in the roster are appended to the recipe's.
 
 ### Room file
 
@@ -142,6 +169,7 @@ AGY_BIN = "/opt/homebrew/bin/agy"
 | grok | `grok agent stdio` | ok, with config | Auto-approves unless `~/.grok/config.toml` has both `[ui] permission_mode = "default"` and `[permission] ask = ["Write(*)", "Edit(*)", "Bash(*)"]`. `always-approve` in the config overrides ask rules, and without ask rules grok inherits Claude Code's `defaultMode=auto`. Two seats get separate sessions. |
 | hermes | `hermes acp` | ok | Loads every configured MCP server at startup, so it is the slowest to come up. |
 | pool | `pool acp --sandbox disabled` | ok | The Docker sandbox fails when the daemon is down, which is what hung the Laguna daemon. |
-| agy | `antigravity-acp` (community) | never asks | The adapter always runs agy with `--dangerously-skip-permissions`. Sandbox-only seat until agy grows a headless permission channel. |
+| agy | `antigravity-acp` (community) | never asks | The adapter always runs agy with `--dangerously-skip-permissions`, and agy's own headless modes write without asking too: it lists `ask_permission` as an agent-side tool, but nothing on the wire carries it. Sandbox-only seat. |
+| laguna | `pool acp --sandbox disabled` + `SOUL.md` | ok | pool wearing the Laguna identity from `AGENT_JOURNAL/laguna/SOUL.md`. The old `pool-laguna.sh` launcher had Linux paths; fixed. |
 
 All six advertise `loadSession`, so resume is on the table for every seat.

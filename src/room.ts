@@ -8,7 +8,8 @@ import { commitTurn, ensureRoomBranch, isRepo } from "./git.js";
 import { emptyPolicy, makeDecider, type Action, type HumanChoice, type Policy, type SeatPolicy } from "./permissions.js";
 import { buildPreamble, PASS } from "./preamble.js";
 import { parseAddress, Scheduler } from "./scheduler.js";
-import { AcpSeat, withTimeout } from "./seat/acp.js";
+import { withTimeout } from "./seat/acp.js";
+import { createSeat } from "./seat/index.js";
 import { pickAskMode } from "./seat/modes.js";
 import type { PermissionDecider, PermissionRequestView, Seat, SeatConfig, SeatEvent } from "./seat/types.js";
 import { renderDelta, Transcript, type Entry } from "./transcript.js";
@@ -100,7 +101,7 @@ export class Room {
     });
     await Promise.all(
       this.opts.seats.map(async (config) => {
-        const seat = this.opts.makeSeat ? this.opts.makeSeat(config, decide) : new AcpSeat(config, decide);
+        const seat = this.opts.makeSeat ? this.opts.makeSeat(config, decide) : createSeat(config, decide);
         this.seats.set(config.name, seat);
         const info = await seat.start();
         const sid = await seat.newSession(this.opts.cwd);
@@ -174,7 +175,7 @@ export class Room {
           seat: config,
           seats: this.opts.seats,
           human: this.opts.human,
-          promptsForwarded: !(config.deny?.includes("*") || config.allow?.includes("*")),
+          promptsForwarded: config.adapter === "acp" && !(config.deny?.includes("*") || config.allow?.includes("*")),
           branch: this.state.branch,
         }) + "\n\n---\n\n"
       : "";

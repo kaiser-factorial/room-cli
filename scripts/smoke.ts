@@ -13,15 +13,22 @@ import { join } from "node:path";
 import { loadRoster, pickSeats } from "../src/config.js";
 import { Room, type RoomUI } from "../src/room.js";
 
-const args = process.argv.slice(2);
-const editorIdx = args.indexOf("--editor");
-const editor = editorIdx >= 0 ? args[editorIdx + 1] : undefined;
-const names = args.filter((a, i) => a !== "--editor" && i !== editorIdx + 1);
+const argv = process.argv.slice(2);
+function opt(flag: string): string | undefined {
+  const i = argv.indexOf(flag);
+  if (i < 0) return undefined;
+  const v = argv[i + 1];
+  argv.splice(i, 2);
+  return v;
+}
+const editor = opt("--editor");
+const rosterFile = opt("--roster");
+const names = argv;
 if (names.length === 0) {
-  console.error("usage: smoke.ts <seat...> [--editor <seat>]");
+  console.error("usage: smoke.ts <seat...> [--editor <seat>] [--roster <file>]");
   process.exit(10);
 }
-const seats = pickSeats(loadRoster(), names);
+const seats = pickSeats(loadRoster(rosterFile), names);
 const fixer = editor ?? names[names.length - 1];
 
 const cwd = mkdtempSync(join(tmpdir(), "room-smoke-"));
