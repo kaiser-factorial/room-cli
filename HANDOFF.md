@@ -120,7 +120,11 @@ From Corina:
 - Blank lines and colour between speakers: done.
 - Watching a seat's loop live: done. The REPL used to drop thought chunks,
   so a thinking seat (grok) looked silent and then answered all at once;
-  thoughts now stream, dimmed (`/thoughts off` folds them).
+  thoughts are shown, dimmed: one short line per stretch by default,
+  `/thoughts full` to stream them. Tool calls are one line each (`/show n`
+  for one in full, `/verbose` for everything).
+- `room start` always opens a new room; a reopened room announces lineup
+  changes (seats kept addressing hermes after it left).
 - Seeing that someone is typing, and a richer layout: phase 5 (TUI).
 
 ## Phase 6: desks
