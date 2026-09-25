@@ -239,6 +239,18 @@ preamble is noticed and written into the transcript. Room policy trusts the
 harness's classification of a tool call (`edit`, `execute`, ...), which the
 harness sets, not the model.
 
+### Roles
+
+The web app's panel roles (`neutral`, `brainstormer`, `critic`,
+`researcher`, `synthesizer`, `implementer`) apply to seats three ways:
+
+- For one room: `room start claude grok --role grok=critic claude=implementer`
+  (put `--role` after the seats, or repeat it).
+- Mid-session: `/role grok critic`, `/role grok none`, and `/role` alone to
+  list the roles and who has which. The seat is told in the room, since its
+  first-turn instructions are already sent; the role is saved with the room.
+- Always: `role = "critic"` in the roster, or `[roles]` in a room file.
+
 ### Personas
 
 A seat can carry an identity on top of its role: `prompt` is inline text,

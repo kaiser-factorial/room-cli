@@ -355,6 +355,26 @@ describe("Room", () => {
     expect(Room.freshName(dir, "other")).toBe("other");
   });
 
+  it("/role mid-session: the seat is told in the room, the role is saved, a bad role is refused", async () => {
+    const { room, fakes } = await open({ a: ["first", "second"], b: ["one", "two"] });
+    await room.say("hi");
+    room.setRole("a", "critic");
+    expect(room.roleOf("a")).toBe("critic");
+    expect(() => room.setRole("a", "wizard")).toThrow(/unknown role "wizard"/);
+    await room.say("@a again");
+    expect(fakes.get("a")!.prompts[1]).toMatch(/\[room\]: a's role is now Critic\. a, from here on: /);
+    room.setRole("b", null);
+    expect(room.roleOf("b")).toBeUndefined();
+    expect(room.state.roles).toEqual({ a: "critic", b: null });
+  });
+
+  it("puts a role set in the room into the first-turn instructions of a seat that starts fresh", async () => {
+    const { room, fakes } = await open({ a: ["x"], b: ["y"] });
+    room.setRole("a", "researcher");
+    await room.say("@a go");
+    expect(fakes.get("a")!.prompts[0]).toContain("You are a, the researcher of this group chat.");
+  });
+
   it("runs a round in order, sends the preamble once, and keeps per-seat cursors", async () => {
     const { room, fakes } = await open({ a: ["first from a", "again"], b: ["b replies"] });
     await room.say("hello everyone");

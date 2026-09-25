@@ -60,6 +60,7 @@ const COMMANDS: acp.AvailableCommand[] = [
   { name: "seats", description: "Seats, their modes and sessions, and what is queued" },
   { name: "parallel", description: "Every seat answers at once; file changes are refused" },
   { name: "sequential", description: "Seats answer one at a time" },
+  { name: "role", description: "Give a seat a role from the presets; alone, list them", input: { hint: "<seat> [id|none]" } },
   { name: "auto", description: "Tool calls run without asking, except deny and ask rules", input: { hint: "[on|off]" } },
   { name: "mode", description: "Show or set a seat's session mode", input: { hint: "<seat> [mode]" } },
   { name: "perm", description: "Show a seat's room policy, or add a rule", input: { hint: "<seat> [allow|ask|deny <pattern>]" } },

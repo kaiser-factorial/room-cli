@@ -37,6 +37,11 @@ export interface PreambleOptions {
   desk?: { path: string; branch: string };
 }
 
+/** The web app's role presets, as `/role` lists them. */
+export function roleList(): Array<{ id: string; label: string }> {
+  return ROLE_PRESETS.map((r) => ({ id: r.id, label: r.label }));
+}
+
 export function rolePrompt(roleId: string | undefined, name: string): string | undefined {
   if (!roleId) return undefined;
   const preset = ROLE_PRESETS.find((r) => r.id === roleId);

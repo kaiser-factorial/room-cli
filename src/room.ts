@@ -7,7 +7,7 @@ import { basename, join } from "node:path";
 import { ConfigError, validateSeatName } from "./config.js";
 import { commitsAhead, commitTurn, ensureRoomBranch, ensureWorktree, headSha, headSubject, isRepo, mergeRef } from "./git.js";
 import { emptyPolicy, makeDecider, type Action, type HumanChoice, type Policy, type SeatPolicy } from "./permissions.js";
-import { BACKGROUND, buildPreamble, LAND, PASS } from "./preamble.js";
+import { BACKGROUND, buildPreamble, LAND, PASS, roleList, rolePrompt } from "./preamble.js";
 import { parseAddress, scanMentions, Scheduler } from "./scheduler.js";
 import { describeError, withTimeout } from "./seat/acp.js";
 import { createSeat } from "./seat/index.js";
@@ -59,6 +59,8 @@ export interface RoomState {
   mode: RoomMode;
   /** Auto mode: tool calls no rule matches run without asking the human. */
   auto?: boolean;
+  /** Roles set with `/role`, over the roster's. `null`: no role. */
+  roles?: Record<string, string | null>;
   /** The lineup, in roster order, as last opened. `room resume` reopens it. */
   seats?: string[];
   cursors: Record<string, number>;
@@ -230,6 +232,36 @@ export class Room {
 
   get auto(): boolean {
     return Boolean(this.state.auto);
+  }
+
+  /** A seat's config with any role set in the room over the roster's. */
+  configOf(name: string): SeatConfig {
+    const config = this.opts.seats.find((s) => s.name === name)!;
+    const set = this.state.roles?.[name];
+    return set === undefined ? config : { ...config, role: set ?? undefined };
+  }
+
+  roleOf(name: string): string | undefined {
+    return this.configOf(name).role;
+  }
+
+  /**
+   * Give a seat a role mid-session (`/role`), or none. The seat's first-turn
+   * instructions are long sent, so the room tells it in the transcript; a
+   * fresh session later gets the role in its instructions.
+   */
+  setRole(seat: string, role: string | null): void {
+    if (!this.seatNames.includes(seat)) throw new Error(`no such seat: ${seat}`);
+    const prompt = role ? rolePrompt(role, seat) : undefined; // throws on an unknown role
+    (this.state.roles ??= {})[seat] = role;
+    this.saveState();
+    const label = role ? roleList().find((r) => r.id === role)!.label : undefined;
+    this.transcript.append(
+      "room",
+      "system",
+      role ? `${seat}'s role is now ${label}. ${seat}, from here on: ${prompt}` : `${seat} no longer has a role; it answers as itself.`,
+    );
+    this.opts.ui.status(role ? `${seat} is now the ${label}` : `${seat} has no role`);
   }
 
   setAuto(on: boolean): void {
@@ -638,7 +670,7 @@ export class Room {
   }
 
   private buildPrompt(name: string, parallel: boolean): string {
-    const config = this.opts.seats.find((s) => s.name === name)!;
+    const config = this.configOf(name);
     const first = this.state.cursors[name] === undefined;
     const delta = this.transcript.since(this.state.cursors[name] ?? 0);
     const rendered = renderDelta(delta, name, [this.opts.human, "room"]);

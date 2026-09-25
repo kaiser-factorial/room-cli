@@ -3,10 +3,12 @@
  * and room policy. Shared by the REPL and the ACP server; each supplies
  * where the output lines go.
  */
+import { roleList } from "./preamble.js";
 import type { Room } from "./room.js";
 
 export const COMMAND_HELP = `  /seats                 seats, modes, and what is queued
   /parallel, /sequential room mode: all seats answer at once, or in turn
+  /role <seat> [id|none]  give a seat a role from the web app's presets (/role alone lists them)
   /auto [on|off]         tool calls run without asking, except deny and ask rules
   /mode <seat> [id]      show or set a seat's session mode
   /unbench <seat>        bring back a seat benched after failing (so does @seat)
@@ -24,6 +26,22 @@ export async function runCommand(room: Room, text: string, out: (line: string) =
     case "/sequential": {
       room.setRoomMode(cmd === "/parallel" ? "parallel" : "sequential");
       out(`  room mode: ${room.mode}${room.mode === "parallel" ? " (file changes refused during rounds)" : ""}`);
+      return;
+    }
+    case "/role": {
+      const [seat, id] = args;
+      if (!seat) {
+        for (const r of roleList()) out(`  ${r.id.padEnd(14)} ${r.label}`);
+        for (const n of room.seatNames) out(`  ${n}: ${room.roleOf(n) ?? "no role"}`);
+        return;
+      }
+      if (!room.seatNames.includes(seat)) return out(`  usage: /role <seat> [id|none]; seats: ${room.seatNames.join(", ")}`);
+      if (!id) return out(`  ${seat}: ${room.roleOf(seat) ?? "no role"}`);
+      try {
+        room.setRole(seat, id === "none" ? null : id);
+      } catch (err) {
+        out(`  ${(err as Error).message}`);
+      }
       return;
     }
     case "/auto": {

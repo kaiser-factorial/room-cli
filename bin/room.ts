@@ -17,6 +17,7 @@ import { EXIT } from "../src/exit-codes.js";
 import { Room } from "../src/room.js";
 import { AcpSeat } from "../src/seat/acp.js";
 import type { PermissionRequestView, SeatConfig } from "../src/seat/types.js";
+import { rolePrompt } from "../src/preamble.js";
 import { serveAcp } from "../src/server/acp.js";
 import { runTui, TuiUI } from "../src/ui/tui/run.js";
 import { TuiStore } from "../src/ui/tui/store.js";
@@ -127,6 +128,7 @@ interface StartOptions {
   parallel?: boolean;
   auto?: boolean;
   tui?: boolean;
+  role?: string[];
   turnTimeout: string;
 }
 
@@ -140,7 +142,27 @@ function roomOptions(cmd: Command): Command {
     .option("--parallel", "start in parallel discussion mode")
     .option("--auto", "tool calls run without asking you, except deny and ask rules")
     .option("--tui", "full-screen terminal UI: live seat boxes, a status bar, and the input always open")
+    .option("--role <seat=role...>", "give seats roles from the web app's presets, e.g. --role grok=critic claude=implementer")
     .option("--turn-timeout <seconds>", "per-turn timeout", "600");
+}
+
+/** `--role grok=critic`: the named seats' roles, over the roster's and the room file's. */
+function withRoles(seats: SeatConfig[], roles: string[] | undefined): SeatConfig[] {
+  const set = new Map<string, string>();
+  for (const r of roles ?? []) {
+    const [seat, role] = r.split("=");
+    if (!seat || !role) withConfig(() => { throw new ConfigError(`--role takes seat=role, e.g. grok=critic (got "${r}")`); });
+    if (!seats.some((s) => s.name === seat)) withConfig(() => { throw new ConfigError(`--role: no seat "${seat}" in this room`); });
+    withConfig(() => {
+      try {
+        rolePrompt(role, seat);
+      } catch (err) {
+        throw new ConfigError(`--role: ${(err as Error).message}`);
+      }
+    });
+    set.set(seat, role);
+  }
+  return seats.map((s) => (set.has(s.name) ? { ...s, role: set.get(s.name) } : s));
 }
 
 /** Seats named on the command line, else the room file's, with the room file's overrides applied. */
@@ -156,8 +178,9 @@ function lineup(names: string[], roomFile: string | undefined, fallback: string[
   return file ? applyRoomFile(seats, file) : seats;
 }
 
-async function runRoom(name: string, seats: SeatConfig[], opts: StartOptions): Promise<void> {
+async function runRoom(name: string, lineupSeats: SeatConfig[], opts: StartOptions): Promise<void> {
   const cwd = resolve(opts.cwd);
+  const seats = withRoles(lineupSeats, opts.role);
   if (opts.tui) {
     const store = new TuiStore();
     const room = await Room.open({
