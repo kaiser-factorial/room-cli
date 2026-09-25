@@ -6,7 +6,7 @@
  * Input goes through a line queue rather than readline's `question`, so
  * lines typed (or piped) while a turn is running are kept, not dropped.
  */
-import type readline from "node:readline";
+import readline from "node:readline";
 import type { HumanChoice } from "../permissions.js";
 import { COMMAND_HELP, runCommand } from "../commands.js";
 import type { Room, RoomUI } from "../room.js";
@@ -39,7 +39,10 @@ export class LineSource {
   private waiting?: (line: string | null) => void;
   private closed = false;
 
-  constructor(private readonly rl: readline.Interface) {
+  constructor(
+    private readonly rl: readline.Interface,
+    private readonly out: NodeJS.WritableStream = process.stdout,
+  ) {
     rl.on("line", (line) => {
       if (this.waiting) {
         const w = this.waiting;
@@ -57,7 +60,7 @@ export class LineSource {
   ask(prompt: string): Promise<string | null> {
     if (this.queue.length) {
       const line = this.queue.shift()!;
-      process.stdout.write(`${prompt}${line}\n`);
+      this.out.write(`${prompt}${line}\n`);
       return Promise.resolve(line);
     }
     if (this.closed) return Promise.resolve(null);
@@ -67,16 +70,46 @@ export class LineSource {
       this.waiting = resolve;
     });
   }
+
+  /** Whether a prompt is on screen, waiting for the human. */
+  get prompting(): boolean {
+    return this.waiting !== undefined;
+  }
+
+  /**
+   * Write output. While a prompt is on screen, something arriving late (a
+   * seat's notice, a status) would land after it and leave the cursor on an
+   * empty line; so clear the prompt, write whole lines, and draw the prompt
+   * again with whatever was typed so far. Returns true when it did that.
+   */
+  write(text: string): boolean {
+    if (!this.prompting) {
+      this.out.write(text);
+      return false;
+    }
+    readline.cursorTo(this.out, 0);
+    readline.clearLine(this.out, 0);
+    this.out.write(text.endsWith("\n") ? text : text + "\n");
+    this.rl.prompt(true);
+    return true;
+  }
 }
 
 export class ReplUI implements RoomUI {
   private speaker?: string;
   private lineStart = true;
 
-  constructor(
-    private readonly lines: LineSource,
-    private readonly out: NodeJS.WritableStream = process.stdout,
-  ) {}
+  constructor(private readonly lines: LineSource) {}
+
+  /** Every write goes through the line source, so one landing over a prompt redraws it. */
+  private readonly out = {
+    write: (text: string): void => {
+      if (this.lines.write(text)) {
+        this.lineStart = true;
+        this.speaker = undefined;
+      }
+    },
+  };
 
   seatEvent(seat: string, ev: SeatEvent): void {
     switch (ev.type) {
@@ -88,8 +121,9 @@ export class ReplUI implements RoomUI {
           this.speaker = seat;
           this.lineStart = false;
         }
-        this.out.write(text);
+        // Set before writing: a write that lands over the prompt resets it.
         this.lineStart = text.endsWith("\n");
+        this.out.write(text);
         break;
       }
       case "tool_call":

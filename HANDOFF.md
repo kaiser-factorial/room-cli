@@ -52,6 +52,7 @@ it, so any test or a `.room.toml` can use it.
 | `--start-delay <ms>` | hermes: slow startup |
 | `--fail-session <msg>` | pool without Docker: `session/new` fails with the detail only in error data |
 | `--fail-session auth` | a harness wanting a login (JSON-RPC -32000) |
+| `--stray-reply <id>` | claude-agent-acp with skills: a reply to a request never made |
 
 Directives in a prompt drive it (`>> say`, `>> edit <path> <text>`,
 `>> run`, `>> remember` / `>> recall`, `>> sleep`, `>> pass`,
@@ -103,9 +104,19 @@ external-agents docs (`"type": "custom"`).
 
 ## Known warts
 
-- A failed turn's streamed text is recorded as the seat's message. Seen in
-  Zed: claude's "You've hit your session limit" became a claude message
-  that grok then quoted. It should be only a `[room]` note. Not yet fixed.
+- Fixed: a failed turn's streamed text was recorded as the seat's message
+  (claude's "You've hit your session limit" became a claude message grok
+  quoted). A failed turn is now a room note, `a's turn failed: ...`, with
+  anything the seat wrote before a real failure quoted inside it.
+- Fixed: `Got response to unknown request skills-reload` over the prompt.
+  claude-agent-acp, on a machine with skills, writes a reply to a request
+  the room never made; the ACP library printed it raw, and it left the
+  cursor on an empty line with no prompt until a key was pressed.
+  `strayFilter` in `seat/acp.ts` drops such replies and non-JSON lines and
+  reports each once as `[room] claude (claude-agent-acp) sent a reply ...`.
+  Any line printed while the prompt is up now redraws the prompt with what
+  was typed (`LineSource.write`). The fake agent's `--stray-reply <id>`
+  reproduces it.
 
 - Fixed: a seat's `[pass]` printed as `pass]` (hermes, 2026-09-25). Not
   cosmetic: `AcpSeat.prompt` raced `updates.next()` against the turn's end

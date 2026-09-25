@@ -10,7 +10,7 @@
  * `session/load` with the replay drained) as well as created.
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { Readable, Writable } from "node:stream";
+import { Readable, Transform, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
 import type {
   PermissionDecider,
@@ -76,6 +76,8 @@ export class AcpSeat implements Seat {
   constructor(
     readonly config: SeatConfig,
     private readonly decide: PermissionDecider,
+    /** Protocol oddities from this seat, for the room to show as its own lines. */
+    private readonly notice: (text: string) => void = () => undefined,
   ) {
     this.name = config.name;
   }
@@ -101,7 +103,7 @@ export class AcpSeat implements Seat {
 
     const stream = acp.ndJsonStream(
       Writable.toWeb(child.stdin!) as WritableStream<Uint8Array>,
-      Readable.toWeb(child.stdout!) as ReadableStream<Uint8Array>,
+      Readable.toWeb(child.stdout!.pipe(strayFilter(this.notice))) as ReadableStream<Uint8Array>,
     );
     this.conn = acp
       .client({ name: "room" })
@@ -349,6 +351,52 @@ export class AcpSeat implements Seat {
     if (answer === "cancel") return { outcome: { outcome: "cancelled" } };
     return { outcome: { outcome: "selected", optionId: answer } };
   }
+}
+
+/**
+ * Drops what the seat writes to the wire that is not for the room: replies
+ * to requests the room never made (the room's request ids are numbers;
+ * claude-agent-acp answers a "skills-reload" of its own on machines with
+ * skills), and lines that are not JSON. The ACP library would print those
+ * straight to the terminal, unattributed and over the prompt. Each kind is
+ * reported once per seat instead.
+ */
+export function strayFilter(notice: (text: string) => void): Transform {
+  let partial = "";
+  const seen = new Set<string>();
+  const once = (key: string, text: string) => {
+    if (seen.has(key)) return;
+    seen.add(key);
+    notice(text);
+  };
+  const keep = (line: string): boolean => {
+    if (!line.trim()) return true;
+    let msg: unknown;
+    try {
+      msg = JSON.parse(line);
+    } catch {
+      once(`text:${line.slice(0, 40)}`, `wrote a line that is not protocol, ignored: ${line.slice(0, 120)}`);
+      return false;
+    }
+    const m = msg as { id?: unknown; method?: unknown; result?: unknown; error?: unknown };
+    const isReply = m && typeof m === "object" && m.method === undefined && ("result" in m || "error" in m);
+    if (isReply && typeof m.id !== "number") {
+      once(`reply:${String(m.id)}`, `sent a reply to a request the room never made (${JSON.stringify(m.id)}), ignored; shown once`);
+      return false;
+    }
+    return true;
+  };
+  return new Transform({
+    transform(chunk: Buffer, _enc, done) {
+      const lines = (partial + chunk.toString("utf8")).split("\n");
+      partial = lines.pop()!;
+      const out = lines.filter(keep);
+      done(null, out.length ? out.join("\n") + "\n" : undefined);
+    },
+    flush(done) {
+      done(null, partial && keep(partial) ? partial : undefined);
+    },
+  });
 }
 
 /** Diffs and text out of a tool call's content, dropping what the terminal cannot show. */

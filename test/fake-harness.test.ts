@@ -12,7 +12,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { runDoctor } from "../src/doctor.js";
 import { EXIT } from "../src/exit-codes.js";
 import { Room, type RoomUI } from "../src/room.js";
-import { AcpSeat, Chan } from "../src/seat/acp.js";
+import { AcpSeat, Chan, strayFilter } from "../src/seat/acp.js";
 import type { PermissionRequestView, SeatEvent } from "../src/seat/types.js";
 import { fakeAcpSeat, fakeCliSeat } from "./fixtures/index.js";
 
@@ -104,6 +104,18 @@ describe("AcpSeat against the fake agent", () => {
     await seat.stop();
   }, 20_000);
 
+  it("drops a reply to a request it never made (claude's skills-reload), reports it once, and keeps working", async () => {
+    const notices: string[] = [];
+    const seat = new AcpSeat(fakeAcpSeat("f", ["--stray-reply", "skills-reload"]), async () => "cancel", (t) => notices.push(t));
+    await seat.start();
+    await seat.newSession(tmp("cwd"));
+    expect((await collect(seat, ">> say one")).text).toBe("one");
+    expect((await collect(seat, ">> say two")).text).toBe("two");
+    await new Promise((r) => setTimeout(r, 300));
+    expect(notices).toEqual(['sent a reply to a request the room never made ("skills-reload"), ignored; shown once']);
+    await seat.stop();
+  }, 20_000);
+
   it("cancels a slow turn", async () => {
     const seat = new AcpSeat(fakeAcpSeat("f"), async () => "cancel");
     await seat.start();
@@ -142,6 +154,36 @@ describe("AcpSeat against the fake agent", () => {
       await cannot.stop();
     }
   }, 60_000);
+});
+
+describe("strayFilter", () => {
+  it("passes protocol lines through, split anywhere, and drops strays once each", async () => {
+    const notices: string[] = [];
+    const f = strayFilter((t) => notices.push(t));
+    const out: string[] = [];
+    f.on("data", (c: Buffer) => out.push(c.toString()));
+    const lines = [
+      '{"jsonrpc":"2.0","id":0,"result":{}}',
+      '{"jsonrpc":"2.0","id":"skills-reload","result":{}}',
+      '{"jsonrpc":"2.0","method":"session/update","params":{}}',
+      "npm warn something",
+      '{"jsonrpc":"2.0","id":"skills-reload","result":{}}',
+      '{"jsonrpc":"2.0","id":"x","method":"session/request_permission","params":{}}',
+    ].join("\n") + "\n";
+    f.write(lines.slice(0, 50));
+    f.write(lines.slice(50));
+    f.end();
+    await new Promise((r) => f.on("end", r));
+    expect(out.join("").trim().split("\n")).toEqual([
+      '{"jsonrpc":"2.0","id":0,"result":{}}',
+      '{"jsonrpc":"2.0","method":"session/update","params":{}}',
+      '{"jsonrpc":"2.0","id":"x","method":"session/request_permission","params":{}}',
+    ]);
+    expect(notices).toEqual([
+      'sent a reply to a request the room never made ("skills-reload"), ignored; shown once',
+      "wrote a line that is not protocol, ignored: npm warn something",
+    ]);
+  });
 });
 
 describe("Chan", () => {

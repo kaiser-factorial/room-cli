@@ -3,7 +3,7 @@
  * The UI is injected so the REPL, tests, and a later TUI share this code.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { ConfigError, validateSeatName } from "./config.js";
 import { commitTurn, ensureRoomBranch, headSha, headSubject, isRepo } from "./git.js";
 import { emptyPolicy, makeDecider, type Action, type HumanChoice, type Policy, type SeatPolicy } from "./permissions.js";
@@ -13,7 +13,7 @@ import { describeError, withTimeout } from "./seat/acp.js";
 import { createSeat } from "./seat/index.js";
 import { pickAskMode } from "./seat/modes.js";
 import type { PermissionDecider, PermissionRequestView, Seat, SeatConfig, SeatEvent } from "./seat/types.js";
-import { renderDelta, Transcript, type Entry } from "./transcript.js";
+import { neutralizeLabels, renderDelta, Transcript, type Entry } from "./transcript.js";
 
 export interface RoomUI {
   seatEvent(seat: string, ev: SeatEvent): void;
@@ -37,7 +37,7 @@ export interface RoomOptions {
   /** Initial mode for a new room. A resumed room keeps its saved mode. */
   mode?: RoomMode;
   /** Seat factory, for tests. */
-  makeSeat?: (config: SeatConfig, decide: PermissionDecider) => Seat;
+  makeSeat?: (config: SeatConfig, decide: PermissionDecider, notice: (text: string) => void) => Seat;
 }
 
 export interface RoomState {
@@ -139,6 +139,13 @@ export class Room {
     return room;
   }
 
+  /** A seat as system lines name it: with its harness when that differs, e.g. `claude (claude-agent-acp)`. */
+  label(seat: string): string {
+    const config = this.opts.seats.find((s) => s.name === seat);
+    const harness = config ? basename(config.command) : undefined;
+    return harness && harness !== seat ? `${seat} (${harness})` : seat;
+  }
+
   get seatNames(): string[] {
     return this.opts.seats.map((s) => s.name);
   }
@@ -191,7 +198,8 @@ export class Room {
     const { ui } = this.opts;
     await Promise.all(
       this.opts.seats.map(async (config) => {
-        const seat = this.opts.makeSeat ? this.opts.makeSeat(config, decide) : createSeat(config, decide);
+        const notice = (text: string) => ui.status(`${this.label(config.name)} ${text}`);
+        const seat = this.opts.makeSeat ? this.opts.makeSeat(config, decide, notice) : createSeat(config, decide, notice);
         this.seats.set(config.name, seat);
         const info = await seat.start();
         // A reopened room: reattach to the seat's saved session, or start fresh and replay.
@@ -407,20 +415,28 @@ export class Room {
     return result;
   }
 
-  /** Append the turn's outcome to the transcript and note the session id. */
+  /**
+   * Append the turn's outcome to the transcript and note the session id. A
+   * failed turn is the room's note, not the seat's message: harnesses often
+   * stream their error as reply text first ("You've hit your session
+   * limit"), and the other seats must not read that as the seat speaking.
+   * Text streamed before a real failure is kept in the note, quoted.
+   */
   private recordTurn(name: string, r: TurnResult): Entry {
-    if (r.failure) {
-      this.opts.ui.status(`${name}: ${r.failure}`);
-      this.transcript.append("room", "system", `${name}'s turn failed: ${r.failure}`);
-    }
     const reply = r.text.trim();
-    const entry =
-      !reply || reply === PASS || r.stopReason === "cancelled"
-        ? this.transcript.append(name, "pass", "")
-        : this.transcript.append(name, "message", reply);
     const sid = this.seats.get(name)?.sessionId;
     if (sid) this.state.sessions[name] = sid;
-    return entry;
+    if (r.failure) {
+      const failure = r.failure.replace(/\s+/g, " ").trim();
+      this.opts.ui.status(`${this.label(name)} turn failed: ${failure}`);
+      const partial = reply && !failure.includes(reply.replace(/\s+/g, " "))
+        ? `\nWhat it wrote before failing:\n${neutralizeLabels(reply)}`
+        : "";
+      return this.transcript.append("room", "system", `${name}'s turn failed: ${failure}${partial}`);
+    }
+    return !reply || reply === PASS || r.stopReason === "cancelled"
+      ? this.transcript.append(name, "pass", "")
+      : this.transcript.append(name, "message", reply);
   }
 
   async runTurn(name: string): Promise<Entry | undefined> {

@@ -5,6 +5,11 @@
  *
  *   tsx fake-agent.ts [--modes] [--auto-edit] [--no-ids] [--resume] [--load]
  *                     [--start-delay <ms>] [--fail-session <msg>] [--state-dir <dir>]
+ *                     [--stray-reply <id>]
+ *
+ * `--stray-reply` mimics claude-agent-acp on a machine with skills set up: a
+ * JSON-RPC reply to a request the client never made (id "skills-reload"),
+ * written shortly after each session/new and each turn.
  *
  * It follows directives in the prompt, one per line:
  *   >> say <text>            stream text in word chunks (messageId unless --no-ids)
@@ -41,7 +46,14 @@ const cfg = {
   startDelay: Number(opt("--start-delay") ?? 0),
   failSession: opt("--fail-session"),
   stateDir: opt("--state-dir") ?? process.env.FAKE_AGENT_STATE ?? join(tmpdir(), "fake-agent-state"),
+  strayReply: opt("--stray-reply"),
 };
+
+/** A reply nobody asked for, written after the current response has gone out. */
+function strayReply(): void {
+  if (!cfg.strayReply) return;
+  setTimeout(() => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: cfg.strayReply, result: {} }) + "\n"), 150);
+}
 mkdirSync(cfg.stateDir, { recursive: true });
 
 interface State {
@@ -244,6 +256,7 @@ async function main() {
       const s: State = { cwd: ctx.params.cwd, mode: cfg.modes ? "auto" : "default", history: [] };
       sessions.set(sessionId, s);
       saveState(sessionId, s);
+      strayReply();
       return { sessionId, modes: modes() ?? null };
     })
     .onRequest(acp.methods.agent.session.setMode, (ctx) => {
@@ -287,6 +300,7 @@ async function main() {
       pending.set(sessionId, ac);
       try {
         const stopReason = await runPrompt(sessionId, text, ctx.client, ac.signal);
+        strayReply();
         return { stopReason };
       } catch (err) {
         if (ac.signal.aborted) return { stopReason: "cancelled" as const };
