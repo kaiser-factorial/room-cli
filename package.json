@@ -4,7 +4,7 @@
   "description": "A terminal room for one human and several coding agents, over the Agent Client Protocol",
   "type": "module",
   "private": true,
-  "packageManager": "pnpm@10.33.0",
+  "packageManager": "pnpm@11.28.0",
   "engines": {
     "node": ">=22"
   },
@@ -39,13 +39,5 @@
     "tsx": "^4.20.0",
     "typescript": "~6.0.2",
     "vitest": "^3.2.0"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "esbuild"
-    ],
-    "ignoredBuiltDependencies": [
-      "antigravity-acp"
-    ]
   }
 }

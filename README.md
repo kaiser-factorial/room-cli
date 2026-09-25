@@ -17,20 +17,27 @@ served to an editor as an ACP agent, with resume.
 ## Install
 
 The room is a pnpm package of its own, outside the web app's npm
-workspace. It needs Node 22 or newer and pnpm 10 (`corepack enable`, or
-`brew install pnpm`). pnpm keeps one content-addressed store per machine,
+workspace. It needs Node 22 or newer and pnpm 11 (`brew install pnpm`, or
+`corepack enable`; `packageManager` pins the version). pnpm keeps one content-addressed store per machine,
 so the adapters' dependencies take disk space once however many checkouts
 use them.
 
 ```bash
 cd packages/room
 pnpm install && pnpm build
-pnpm link --global        # `room` on PATH, running this checkout; rebuild after pulling
+pnpm add -g link:$PWD     # `room` on PATH, running this checkout; rebuild after pulling
 ```
 
-The first global link asks for `pnpm setup` once (it adds `PNPM_HOME` to your
-shell profile). For an install that does not follow the checkout, the way a
-pip install would not: `pnpm pack`, then `pnpm add -g ./local-room-0.0.1.tgz`.
+pnpm 11 puts global commands in `$PNPM_HOME/bin` (pnpm 10 used
+`$PNPM_HOME`), and `pnpm link --global` is gone in favour of the `link:`
+protocol above. If `pnpm add -g` says the global bin directory is not in
+PATH, add `export PATH="$PNPM_HOME/bin:$PATH"` to your shell profile.
+For an install that does not follow the checkout, the way a pip install
+would not: `pnpm pack`, then `pnpm add -g ./local-room-0.0.1.tgz`.
+
+Dependency install scripts run only where `pnpm-workspace.yaml` allows
+them (`allowBuilds`), and pnpm 11 will not install a release younger than
+a day, so a freshly published compromised version cannot land here.
 
 The claude, codex, and agy adapters ship with the room, so `room` finds
 them from anywhere. Seats with their own binaries (grok, hermes, pool) come
@@ -192,7 +199,7 @@ over stdio; first tried in Zed on 2026-09-25). Use an absolute path, from
 "agent_servers": {
   "room": {
     "type": "custom",
-    "command": "/Users/you/Library/pnpm/room",
+    "command": "/Users/you/Library/pnpm/bin/room",
     "args": ["acp", "claude", "grok"],
     "env": {}
   }

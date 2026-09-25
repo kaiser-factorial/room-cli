@@ -1,0 +1,7 @@
+# The room is its own pnpm project, outside the web app's npm workspace.
+# pnpm runs no dependency install scripts unless allowed here.
+allowBuilds:
+  # tsx and vitest need its binary.
+  esbuild: true
+  # Downloads agy with bun; the room points the adapter at your own agy.
+  antigravity-acp: false

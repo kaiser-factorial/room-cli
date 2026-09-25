@@ -22,8 +22,10 @@ Design", https://claude.ai/code/artifact/8624261e-8ed2-45ea-ad01-d8b06166e1e1
 
 Tests: `pnpm install && pnpm test` in `packages/room`, 63 tests, run
 anywhere with Node 22+. The room is no longer in the root's npm workspace:
-it has its own `pnpm-lock.yaml`, its own `vitest.config.ts`, and a `room`
-job in CI (typecheck, tests, build). The web app is still npm.
+it has its own `pnpm-lock.yaml` (pnpm 11, build scripts allowed in
+`pnpm-workspace.yaml`), its own `vitest.config.ts`, and a `room` job in CI
+(typecheck, tests, build). The web app is still npm. Install as a command
+with `pnpm add -g link:$PWD`; pnpm 11 dropped `pnpm link --global`.
 `test/fake-harness.test.ts` spawns real subprocesses that speak the real
 protocol, which covers what the live checks on the owner's Mac cover:
 handshake, modes, the permission round trip with diffs, command output,
