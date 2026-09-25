@@ -9,9 +9,9 @@ context window; the room holds only the transcript and the session ids. When
 a seat wants to do something gated, its `session/request_permission` is
 forwarded to you. Nothing is auto-approved unless a seat's own config says so.
 
-Design doc: *Joint Session CLI Design* (Claude Docs). Phases 0 to 2 are
-done: the doctor, a sequential room with a streaming REPL, and the CLI
-fallback adapter.
+Design doc: *Joint Session CLI Design* (Claude Docs). Phases 0 to 3 are
+done: the doctor, a room with a streaming REPL, the CLI fallback adapter,
+and seats that address each other, pass, and answer in parallel.
 
 ## Commands
 
@@ -52,6 +52,24 @@ grok> Changed names[i + 1] to names[i].
   [room] grok committed 60c2ccf: 1 file changed, 1 insertion(+), 1 deletion(-)
 ```
 
+### Who speaks next
+
+- **Sequential** (default): your message starts a round in roster order.
+- **Hand-offs:** a seat that writes `@name` in its reply puts that seat
+  next, ahead of the rest of the round. `@<you>` hands back and ends the
+  round. Mentions inside code fences do not count. At most six extra turns
+  per human message, so two seats cannot volley forever.
+- **Passing:** a seat replying `[pass]` is recorded as a pass. An empty
+  line runs another round, skipping any seat that passed and has seen
+  nothing new since.
+- **Parallel** (`/parallel`, `/sequential`, or `--parallel`): every queued
+  seat answers the same snapshot at once, replies are shown one seat at a
+  time, and each seat sees the others' replies next round. File edits,
+  deletes, moves, and shell commands are refused by the room during a
+  parallel round without asking you, because several seats writing one
+  working directory at once would collide. Hand-offs from a parallel batch
+  run afterwards.
+
 ### Permissions, two levers
 
 **Room policy** works for every seat, because it sits in the orchestrator.
@@ -76,6 +94,16 @@ the config. grok and pool advertise none, so their config files are the lever.
 /mode claude                     list modes, current marked
 /mode claude acceptEdits
 ```
+
+### Seats are untrusted
+
+A seat's reply is data. Lines in it that look like `[name]:` labels are
+quoted before the next seat sees them, so a seat cannot speak as you or as
+the room. Escape sequences and control characters are stripped before
+anything reaches your terminal. A seat that commits on its own despite the
+preamble is noticed and written into the transcript. Room policy trusts the
+harness's classification of a tool call (`edit`, `execute`, ...), which the
+harness sets, not the model.
 
 ### Personas
 

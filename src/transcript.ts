@@ -83,7 +83,7 @@ export function neutralizeLabels(text: string): string {
 export function renderDelta(entries: Entry[], forSeat: string, trusted: string[] = []): string {
   const lines: string[] = [];
   for (const e of entries) {
-    if (e.from === forSeat && e.kind === "message") continue;
+    if (e.from === forSeat && (e.kind === "message" || e.kind === "pass")) continue;
     switch (e.kind) {
       case "message":
         lines.push(`[${e.from}]: ${trusted.includes(e.from) ? e.text : neutralizeLabels(e.text)}`);

@@ -16,6 +16,7 @@ const HELP = `commands:
   @seat <text>           say something to one seat (several: @a @b)
   <empty line> or /next  another round with no new message
   /seats                 seats, modes, and what is queued
+  /parallel, /sequential room mode: all seats answer at once (no edits), or in turn
   /mode <seat> [id]      show or set a seat's session mode
   /perm <seat>           show a seat's policy
   /perm <seat> allow|ask|deny <pattern>   add a rule (kind like edit, or title glob like "Write *")
@@ -170,7 +171,14 @@ async function command(room: Room, text: string): Promise<void> {
     process.stdout.write(s + "\n");
   };
   switch (cmd) {
+    case "/parallel":
+    case "/sequential": {
+      room.setRoomMode(cmd === "/parallel" ? "parallel" : "sequential");
+      out(`  room mode: ${room.mode}${room.mode === "parallel" ? " (file changes refused during rounds)" : ""}`);
+      return;
+    }
     case "/seats": {
+      out(`  room mode: ${room.mode}`);
       for (const name of room.seatNames) {
         const modes = room.modesOf(name);
         const mode = room.state.modes[name] ?? modes?.current ?? "-";

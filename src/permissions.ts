@@ -45,6 +45,8 @@ export type HumanChoice = "allow" | "allow_always" | "deny" | "cancel";
 
 export interface DeciderHooks {
   policyFor(seat: string): SeatPolicy | undefined;
+  /** A room-wide override checked before policy, e.g. "no edits during a parallel round". */
+  override?(req: PermissionRequestView): "allow" | "deny" | undefined;
   askHuman(req: PermissionRequestView): Promise<HumanChoice>;
   /** Called when the human picks "always". The pattern is the tool kind, or the title when there is no kind. */
   onAllowAlways(seat: string, pattern: string): void;
@@ -63,6 +65,11 @@ export function optionFor(req: PermissionRequestView, action: "allow" | "deny"):
 
 export function makeDecider(hooks: DeciderHooks): PermissionDecider {
   return async (req) => {
+    const forced = hooks.override?.(req);
+    if (forced) {
+      hooks.log?.(`[${req.seat}] ${forced} by room: ${req.title}`);
+      return optionFor(req, forced);
+    }
     const action = decide(hooks.policyFor(req.seat), req);
     if (action !== "ask") {
       hooks.log?.(`[${req.seat}] ${action} by policy: ${req.title}`);

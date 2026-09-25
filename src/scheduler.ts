@@ -36,6 +36,23 @@ export class Scheduler {
 }
 
 /**
+ * Every `@name` in a reply, outside code fences and inline code, that names
+ * a known participant. Order of first appearance, case-insensitive. An
+ * `@` glued to a preceding word (an email, a decorator) does not count.
+ */
+export function scanMentions(text: string, names: string[]): string[] {
+  const stripped = text.replace(/```[\s\S]*?```/g, " ").replace(/`[^`\n]*`/g, " ");
+  const found: string[] = [];
+  const re = /(?:^|[\s(,;:>"'*_])@([\w-]+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(stripped))) {
+    const name = names.find((n) => n.toLowerCase() === m![1].toLowerCase());
+    if (name && !found.includes(name)) found.push(name);
+  }
+  return found;
+}
+
+/**
  * A leading `@name` (or several) addresses specific seats. Returns the
  * addressed seats and the text with the addresses stripped. Case-insensitive.
  */

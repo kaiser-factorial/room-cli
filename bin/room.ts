@@ -120,11 +120,12 @@ program
   .option("--human <name>", "your name in the transcript", "Corina")
   .option("--room-file <file>", "TOML with seats, modes, roles, and policy")
   .option("--no-git", "do not branch or commit per turn")
+  .option("--parallel", "start in parallel discussion mode")
   .option("--turn-timeout <seconds>", "per-turn timeout", "600")
   .action(
     async (
       names: string[],
-      opts: { name: string; cwd: string; human: string; roomFile?: string; git: boolean; turnTimeout: string },
+      opts: { name: string; cwd: string; human: string; roomFile?: string; git: boolean; parallel?: boolean; turnTimeout: string },
     ) => {
       const roster = withConfig(() => loadRoster(program.opts().roster));
       const file = opts.roomFile ? withConfig(() => loadRoomFile(opts.roomFile!)) : undefined;
@@ -145,6 +146,7 @@ program
         human: opts.human,
         ui,
         git: opts.git ? undefined : false,
+        mode: opts.parallel ? "parallel" : undefined,
         turnTimeoutMs: Number(opts.turnTimeout) * 1000,
       });
       ui.status(`starting ${seats.map((s) => s.name).join(", ")} in ${resolve(opts.cwd)}`);
