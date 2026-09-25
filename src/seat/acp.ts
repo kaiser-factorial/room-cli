@@ -4,6 +4,10 @@
  * Spawns `config.command config.args`, speaks JSON-RPC over its stdio with the
  * ACP SDK, and forwards every `session/request_permission` to the decider the
  * UI supplies. Nothing is auto-approved here.
+ *
+ * Session updates are routed by this class rather than the SDK's session
+ * helper, so a saved session can be resumed (`session/resume`, or
+ * `session/load` with the replay drained) as well as created.
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { Readable, Writable } from "node:stream";
@@ -15,18 +19,41 @@ import type {
   SeatConfig,
   SeatEvent,
   SeatInfo,
+  ToolContentView,
 } from "./types.js";
 import { childEnv } from "../env.js";
 
-type ActiveSession = Awaited<ReturnType<ReturnType<acp.ClientContext["buildSession"]>["start"]>>;
-
 const STDERR_TAIL_BYTES = 16384;
+
+/** An unbounded async queue. */
+class Chan<T> {
+  private items: T[] = [];
+  private waiters: Array<(v: T) => void> = [];
+  push(v: T): void {
+    const w = this.waiters.shift();
+    if (w) w(v);
+    else this.items.push(v);
+  }
+  next(): Promise<T> {
+    if (this.items.length) return Promise.resolve(this.items.shift()!);
+    return new Promise((r) => this.waiters.push(r));
+  }
+  tryNext(): T | undefined {
+    return this.items.shift();
+  }
+  clear(): void {
+    this.items = [];
+  }
+}
 
 export class AcpSeat implements Seat {
   readonly name: string;
   private child?: ChildProcess;
   private conn?: acp.ClientConnection;
-  private session?: ActiveSession;
+  private sid?: string;
+  private newSessionResponse?: acp.NewSessionResponse;
+  private caps?: acp.InitializeResponse["agentCapabilities"];
+  private readonly updates = new Chan<acp.SessionNotification>();
   private stderr = "";
   private exitInfo?: { code: number | null; signal: NodeJS.Signals | null };
 
@@ -50,23 +77,21 @@ export class AcpSeat implements Seat {
     child.on("exit", (code, signal) => {
       this.exitInfo = { code, signal };
     });
-
-    const spawned = new Promise<void>((resolve, reject) => {
+    await new Promise<void>((resolve, reject) => {
       child.once("spawn", () => resolve());
       child.once("error", (err) => reject(err));
     });
-    await spawned;
 
     const stream = acp.ndJsonStream(
       Writable.toWeb(child.stdin!) as WritableStream<Uint8Array>,
       Readable.toWeb(child.stdout!) as ReadableStream<Uint8Array>,
     );
-
     this.conn = acp
       .client({ name: "room" })
-      .onRequest(acp.methods.client.session.requestPermission, (ctx) =>
-        this.onPermission(ctx.params),
-      )
+      .onRequest(acp.methods.client.session.requestPermission, (ctx) => this.onPermission(ctx.params))
+      .onNotification(acp.methods.client.session.update, (ctx) => {
+        if (!this.sid || ctx.params.sessionId === this.sid) this.updates.push(ctx.params);
+      })
       .connect(stream);
 
     const init = await withTimeout(
@@ -81,7 +106,7 @@ export class AcpSeat implements Seat {
       await this.stop();
       throw err;
     });
-
+    this.caps = init.agentCapabilities;
     return {
       agentName: init.agentInfo?.name,
       agentVersion: init.agentInfo?.version,
@@ -91,20 +116,53 @@ export class AcpSeat implements Seat {
     };
   }
 
-  async newSession(cwd: string): Promise<string> {
+  private agent(): acp.ClientContext {
     if (!this.conn) throw new Error(`${this.name}: not started`);
-    this.session?.dispose();
-    this.session = await this.conn.agent.buildSession(cwd).start();
-    return this.session.sessionId;
+    return this.conn.agent;
+  }
+
+  async newSession(cwd: string): Promise<string> {
+    const res = await this.agent().request(acp.methods.agent.session.new, { cwd, mcpServers: [] });
+    this.newSessionResponse = res;
+    this.sid = res.sessionId;
+    this.updates.clear();
+    return res.sessionId;
+  }
+
+  /**
+   * Reattach to a saved session. Prefers `session/resume` (no replay); falls
+   * back to `session/load` and drains the replayed history. Returns false when
+   * the agent cannot, so the room can start fresh and replay the transcript.
+   */
+  async resumeSession(sessionId: string, cwd: string): Promise<boolean> {
+    const caps = this.caps as Record<string, unknown> | undefined;
+    const sessionCaps = (caps?.sessionCapabilities ?? {}) as Record<string, unknown>;
+    try {
+      if (sessionCaps.resume) {
+        await this.agent().request(acp.methods.agent.session.resume, { sessionId, cwd, mcpServers: [] });
+      } else if (caps?.loadSession) {
+        this.sid = sessionId; // route the replay into the queue, then discard it
+        await this.agent().request(acp.methods.agent.session.load, { sessionId, cwd, mcpServers: [] });
+      } else {
+        return false;
+      }
+      this.sid = sessionId;
+      this.updates.clear();
+      return true;
+    } catch {
+      this.sid = undefined;
+      this.updates.clear();
+      return false;
+    }
   }
 
   get sessionId(): string | undefined {
-    return this.session?.sessionId;
+    return this.sid;
   }
 
   /** Session modes the agent advertised at session/new, if any. */
   get modes(): { current?: string; available: Array<{ id: string; name: string }> } | undefined {
-    const m = this.session?.modes;
+    const m = this.newSessionResponse?.modes;
     if (!m) return undefined;
     return {
       current: m.currentModeId ?? undefined,
@@ -121,7 +179,7 @@ export class AcpSeat implements Seat {
     current?: unknown;
     values?: Array<{ id: string; name: string }>;
   }> {
-    const opts = this.session?.newSessionResponse.configOptions ?? [];
+    const opts = this.newSessionResponse?.configOptions ?? [];
     return opts.map((o) => {
       const rec = o as unknown as Record<string, unknown>;
       const values = Array.isArray(rec.options)
@@ -143,40 +201,37 @@ export class AcpSeat implements Seat {
   }
 
   async setConfigOption(configId: string, value: string | boolean): Promise<void> {
-    if (!this.conn || !this.session) throw new Error(`${this.name}: no session`);
-    await this.conn.agent.request(acp.methods.agent.session.setConfigOption, {
-      sessionId: this.session.sessionId,
+    if (!this.sid) throw new Error(`${this.name}: no session`);
+    await this.agent().request(acp.methods.agent.session.setConfigOption, {
+      sessionId: this.sid,
       configId,
       value,
     } as acp.SetSessionConfigOptionRequest);
   }
 
   async setMode(modeId: string): Promise<void> {
-    if (!this.conn || !this.session) throw new Error(`${this.name}: no session`);
-    await this.conn.agent.request(acp.methods.agent.session.setMode, {
-      sessionId: this.session.sessionId,
-      modeId,
-    });
+    if (!this.sid) throw new Error(`${this.name}: no session`);
+    await this.agent().request(acp.methods.agent.session.setMode, { sessionId: this.sid, modeId });
   }
 
   async *prompt(text: string): AsyncIterable<SeatEvent> {
-    const session = this.session;
-    if (!session) throw new Error(`${this.name}: no session`);
-    // The returned promise also queues a `stop` message; reading updates is enough.
-    session.prompt(text).catch(() => undefined);
+    const sid = this.sid;
+    if (!sid) throw new Error(`${this.name}: no session`);
+    this.updates.clear();
+    let finished: { stopReason: string } | { error: Error } | undefined;
+    const done = this.agent()
+      .request(acp.methods.agent.session.prompt, { sessionId: sid, prompt: [{ type: "text", text }] })
+      .then((r) => (finished = { stopReason: r.stopReason }))
+      .catch((err: Error) => (finished = { error: err }));
+
     // Chunks of one message share a messageId; a new id after text is a paragraph
     // break. Some agents send no ids, so a tool call between two runs of text
     // also breaks the paragraph.
     let lastMessageId: string | null | undefined;
     let emittedText = false;
     let breakPending = false;
-    for (;;) {
-      const msg = await session.nextUpdate();
-      if (msg.kind === "stop") {
-        yield { type: "stop", stopReason: msg.stopReason };
-        return;
-      }
-      const u = msg.update;
+
+    const map = function* (this: AcpSeat, u: acp.SessionUpdate): Generator<SeatEvent> {
       switch (u.sessionUpdate) {
         case "agent_message_chunk":
           if (u.content.type === "text") {
@@ -200,6 +255,8 @@ export class AcpSeat implements Seat {
             title: u.title,
             kind: u.kind ?? undefined,
             status: u.status ?? undefined,
+            content: toolContent(u.content),
+            locations: u.locations?.map((l) => l.path),
           };
           break;
         case "tool_call_update":
@@ -208,24 +265,37 @@ export class AcpSeat implements Seat {
             id: u.toolCallId,
             title: u.title ?? undefined,
             status: u.status ?? undefined,
+            content: toolContent(u.content),
+            locations: u.locations?.map((l) => l.path),
           };
           break;
         default:
           yield { type: "other", update: u.sessionUpdate };
       }
+    }.bind(this);
+
+    for (;;) {
+      const n = await Promise.race([this.updates.next(), done.then(() => null)]);
+      if (n) {
+        yield* map(n.update);
+        continue;
+      }
+      // The prompt finished; updates that arrived just before are still queued.
+      let rest: acp.SessionNotification | undefined;
+      while ((rest = this.updates.tryNext())) yield* map(rest.update);
+      if (finished && "error" in finished) throw finished.error;
+      yield { type: "stop", stopReason: finished?.stopReason ?? "end_turn" };
+      return;
     }
   }
 
   async cancel(): Promise<void> {
-    if (!this.conn || !this.session) return;
-    await this.conn.agent
-      .notify(acp.methods.agent.session.cancel, { sessionId: this.session.sessionId })
-      .catch(() => undefined);
+    if (!this.conn || !this.sid) return;
+    await this.conn.agent.notify(acp.methods.agent.session.cancel, { sessionId: this.sid }).catch(() => undefined);
   }
 
   async stop(): Promise<void> {
-    this.session?.dispose();
-    this.session = undefined;
+    this.sid = undefined;
     try {
       this.conn?.close();
     } catch {
@@ -248,9 +318,7 @@ export class AcpSeat implements Seat {
     return this.stderr;
   }
 
-  private async onPermission(
-    params: acp.RequestPermissionRequest,
-  ): Promise<acp.RequestPermissionResponse> {
+  private async onPermission(params: acp.RequestPermissionRequest): Promise<acp.RequestPermissionResponse> {
     const view: PermissionRequestView = {
       seat: this.name,
       sessionId: params.sessionId,
@@ -258,11 +326,24 @@ export class AcpSeat implements Seat {
       title: params.toolCall.title ?? "(untitled tool call)",
       kind: params.toolCall.kind ?? undefined,
       options: params.options.map((o) => ({ optionId: o.optionId, name: o.name, kind: o.kind })),
+      content: toolContent(params.toolCall.content),
     };
     const answer = await this.decide(view);
     if (answer === "cancel") return { outcome: { outcome: "cancelled" } };
     return { outcome: { outcome: "selected", optionId: answer } };
   }
+}
+
+/** Diffs and text out of a tool call's content, dropping what the terminal cannot show. */
+function toolContent(content: acp.ToolCallContent[] | null | undefined): ToolContentView[] | undefined {
+  if (!content || content.length === 0) return undefined;
+  const out: ToolContentView[] = [];
+  for (const c of content) {
+    if (c.type === "diff") out.push({ type: "diff", path: c.path, oldText: c.oldText ?? undefined, newText: c.newText });
+    else if (c.type === "content" && c.content.type === "text") out.push({ type: "text", text: c.content.text });
+    else if (c.type === "terminal") out.push({ type: "text", text: `(terminal ${c.terminalId})` });
+  }
+  return out.length ? out : undefined;
 }
 
 function sleep(ms: number): Promise<void> {

@@ -48,6 +48,13 @@ export class CliSeat implements Seat {
     return this.sid;
   }
 
+  /** The recipe's resume flag does the work; just remember the id. */
+  async resumeSession(sessionId: string, cwd: string): Promise<boolean> {
+    this.cwd = cwd;
+    this.sid = sessionId;
+    return true;
+  }
+
   async *prompt(text: string): AsyncIterable<SeatEvent> {
     this.turns += 1;
     const turn = {

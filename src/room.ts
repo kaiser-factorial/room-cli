@@ -170,8 +170,19 @@ export class Room {
         const seat = this.opts.makeSeat ? this.opts.makeSeat(config, decide) : createSeat(config, decide);
         this.seats.set(config.name, seat);
         const info = await seat.start();
-        const sid = await seat.newSession(this.opts.cwd);
-        this.state.sessions[config.name] = sid;
+        // A reopened room: reattach to the seat's saved session, or start fresh and replay.
+        const saved = this.state.sessions[config.name];
+        const seen = this.state.cursors[config.name];
+        let resumed = false;
+        if (saved && seen !== undefined && !saved.startsWith("pending:") && seat.resumeSession) {
+          resumed = await seat.resumeSession(saved, this.opts.cwd);
+          ui.status(resumed ? `${config.name}: resumed session ${saved}` : `${config.name}: could not resume; replaying the transcript`);
+        }
+        if (!resumed) {
+          const sid = await seat.newSession(this.opts.cwd);
+          this.state.sessions[config.name] = sid;
+          if (seen !== undefined) delete this.state.cursors[config.name];
+        }
         const wanted = config.mode ?? pickAskMode(seat.modes);
         if (wanted && seat.setMode && seat.modes?.current !== wanted) {
           await seat.setMode(wanted);

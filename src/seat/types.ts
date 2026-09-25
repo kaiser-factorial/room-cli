@@ -38,11 +38,31 @@ export interface SeatInfo {
   authMethods: Array<{ id: string; name: string }>;
 }
 
+/** What a tool call produced, in a form the terminal can show. */
+export type ToolContentView =
+  | { type: "diff"; path: string; oldText?: string; newText: string }
+  | { type: "text"; text: string };
+
 export type SeatEvent =
   | { type: "text"; text: string }
   | { type: "thought"; text: string }
-  | { type: "tool_call"; id: string; title: string; kind?: string; status?: string }
-  | { type: "tool_update"; id: string; title?: string; status?: string }
+  | {
+      type: "tool_call";
+      id: string;
+      title: string;
+      kind?: string;
+      status?: string;
+      content?: ToolContentView[];
+      locations?: string[];
+    }
+  | {
+      type: "tool_update";
+      id: string;
+      title?: string;
+      status?: string;
+      content?: ToolContentView[];
+      locations?: string[];
+    }
   | { type: "other"; update: string }
   | { type: "stop"; stopReason: string };
 
@@ -59,6 +79,8 @@ export interface PermissionRequestView {
   title: string;
   kind?: string;
   options: PermissionOptionView[];
+  /** The proposed change, when the agent sends it with the request. */
+  content?: ToolContentView[];
 }
 
 /** Answers a permission request. Return an optionId, or "cancel" to cancel the turn. */
@@ -71,6 +93,8 @@ export interface Seat {
   start(opts?: { timeoutMs?: number }): Promise<SeatInfo>;
   /** Open a fresh session rooted at `cwd`. Returns the session id. */
   newSession(cwd: string): Promise<string>;
+  /** Reattach to a saved session. False when the harness cannot; the room then replays. */
+  resumeSession?(sessionId: string, cwd: string): Promise<boolean>;
   /** Send one turn and stream its events until the agent stops. */
   prompt(text: string): AsyncIterable<SeatEvent>;
   /** Cancel the in-flight turn, if any. */

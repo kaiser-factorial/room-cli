@@ -9,7 +9,8 @@
 import type readline from "node:readline";
 import type { HumanChoice } from "../permissions.js";
 import type { Room, RoomUI } from "../room.js";
-import type { PermissionRequestView, SeatEvent } from "../seat/types.js";
+import type { PermissionRequestView, SeatEvent, ToolContentView } from "../seat/types.js";
+import { renderToolContent } from "./render.js";
 
 const HELP = `commands:
   <text>                 say something; every seat answers in order
@@ -98,8 +99,24 @@ export class ReplUI implements RoomUI {
       case "tool_call":
         this.newline();
         this.out.write(`  · ${seat}: ${sanitizeForTerminal(ev.title)}${ev.kind ? ` [${ev.kind}]` : ""}\n`);
+        this.writeContent(ev.content);
         this.lineStart = true;
         this.speaker = undefined;
+        break;
+      case "tool_update":
+        // Most harnesses send the diff or the output on the completing update.
+        if (ev.content && ev.status !== "pending" && ev.status !== "in_progress") {
+          this.newline();
+          if (ev.title) this.out.write(`  · ${seat}: ${sanitizeForTerminal(ev.title)}${ev.status === "failed" ? " (failed)" : ""}\n`);
+          this.writeContent(ev.content);
+          this.lineStart = true;
+          this.speaker = undefined;
+        } else if (ev.status === "failed") {
+          this.newline();
+          this.out.write(`  · ${seat}: tool failed${ev.title ? `: ${sanitizeForTerminal(ev.title)}` : ""}\n`);
+          this.lineStart = true;
+          this.speaker = undefined;
+        }
         break;
       case "stop":
         this.newline();
@@ -110,10 +127,15 @@ export class ReplUI implements RoomUI {
     }
   }
 
+  private writeContent(content: ToolContentView[] | undefined): void {
+    for (const line of renderToolContent(content)) this.out.write(`${sanitizeForTerminal(line)}\n`);
+  }
+
   async askHuman(req: PermissionRequestView): Promise<HumanChoice> {
     this.newline();
     this.speaker = undefined;
     this.out.write(`? ${req.seat} wants: ${sanitizeForTerminal(req.title)}${req.kind ? ` [${req.kind}]` : ""}\n`);
+    this.writeContent(req.content);
     for (;;) {
       const a = (await this.lines.ask("  [a] allow  [A] always (room rule)  [d] deny  [c] cancel turn > "))?.trim();
       if (a === null || a === undefined) return "deny"; // stdin closed
