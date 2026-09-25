@@ -23,6 +23,14 @@ export async function currentBranch(cwd: string): Promise<string> {
   return git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
 }
 
+export async function headSha(cwd: string): Promise<string> {
+  return git(cwd, ["rev-parse", "--short", "HEAD"]);
+}
+
+export async function headSubject(cwd: string): Promise<string> {
+  return git(cwd, ["log", "-1", "--format=%s"]);
+}
+
 /** Create and check out `room/<name>` from the current HEAD, or reuse it. */
 export async function ensureRoomBranch(cwd: string, name: string): Promise<string> {
   const branch = `room/${name}`;

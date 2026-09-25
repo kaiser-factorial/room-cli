@@ -22,6 +22,19 @@ const HELP = `commands:
   /unperm <seat> <pattern>                remove a rule
   /quit`;
 
+/**
+ * Seat text goes to the terminal raw, so a seat could emit escape sequences
+ * that retitle the window, move the cursor, or hide text. Strip them, and
+ * every control character except newline and tab.
+ */
+export function sanitizeForTerminal(text: string): string {
+  return text
+    .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "") // OSC ... BEL or ST
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "") // CSI
+    .replace(/\u001b[@-Z\\-_]/g, "") // other two-byte escapes
+    .replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "");
+}
+
 /** Queued lines from a readline interface. `ask` resolves null when stdin closes. */
 export class LineSource {
   private queue: string[] = [];
@@ -69,19 +82,21 @@ export class ReplUI implements RoomUI {
 
   seatEvent(seat: string, ev: SeatEvent): void {
     switch (ev.type) {
-      case "text":
+      case "text": {
+        const text = sanitizeForTerminal(ev.text);
         if (this.speaker !== seat) {
           this.newline();
           this.out.write(`${seat}> `);
           this.speaker = seat;
           this.lineStart = false;
         }
-        this.out.write(ev.text);
-        this.lineStart = ev.text.endsWith("\n");
+        this.out.write(text);
+        this.lineStart = text.endsWith("\n");
         break;
+      }
       case "tool_call":
         this.newline();
-        this.out.write(`  · ${seat}: ${ev.title}${ev.kind ? ` [${ev.kind}]` : ""}\n`);
+        this.out.write(`  · ${seat}: ${sanitizeForTerminal(ev.title)}${ev.kind ? ` [${ev.kind}]` : ""}\n`);
         this.lineStart = true;
         this.speaker = undefined;
         break;
@@ -97,7 +112,7 @@ export class ReplUI implements RoomUI {
   async askHuman(req: PermissionRequestView): Promise<HumanChoice> {
     this.newline();
     this.speaker = undefined;
-    this.out.write(`? ${req.seat} wants: ${req.title}${req.kind ? ` [${req.kind}]` : ""}\n`);
+    this.out.write(`? ${req.seat} wants: ${sanitizeForTerminal(req.title)}${req.kind ? ` [${req.kind}]` : ""}\n`);
     for (;;) {
       const a = (await this.lines.ask("  [a] allow  [A] always (room rule)  [d] deny  [c] cancel turn > "))?.trim();
       if (a === null || a === undefined) return "deny"; // stdin closed
@@ -110,7 +125,7 @@ export class ReplUI implements RoomUI {
 
   status(line: string): void {
     this.newline();
-    this.out.write(`  [room] ${line}\n`);
+    this.out.write(`  [room] ${sanitizeForTerminal(line)}\n`);
     this.lineStart = true;
     this.speaker = undefined;
   }

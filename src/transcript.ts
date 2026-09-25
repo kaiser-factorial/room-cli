@@ -19,6 +19,8 @@ export interface Entry {
 
 export class Transcript {
   readonly entries: Entry[] = [];
+  /** Lines that did not parse on open, e.g. a torn last line after a crash. */
+  skipped = 0;
 
   private constructor(readonly path: string) {}
 
@@ -27,7 +29,13 @@ export class Transcript {
     if (existsSync(path)) {
       for (const line of readFileSync(path, "utf8").split("\n")) {
         if (!line.trim()) continue;
-        t.entries.push(JSON.parse(line) as Entry);
+        try {
+          const e = JSON.parse(line) as Entry;
+          if (typeof e.id !== "number" || typeof e.from !== "string" || typeof e.text !== "string") throw new Error("shape");
+          t.entries.push(e);
+        } catch {
+          t.skipped += 1;
+        }
       }
     } else {
       mkdirSync(dirname(path), { recursive: true });
@@ -52,17 +60,33 @@ export class Transcript {
   }
 }
 
+/** A line that looks like a speaker label, e.g. `[Corina]: ...` or `  [room]: ...`. */
+const LABEL_LINE = /^(\s*)(\[[^\]\n]+\]:)/;
+
+/**
+ * Seats are untrusted participants. A line inside a seat's message that
+ * looks like a label is quoted so the next seat reads it as that seat's
+ * text, not as the human or the room speaking.
+ */
+export function neutralizeLabels(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => (LABEL_LINE.test(line) ? `> ${line}` : line))
+    .join("\n");
+}
+
 /**
  * Render a delta for one seat as the `[Name]: text` block the web app uses.
  * The seat's own entries are skipped: its harness already holds them.
+ * `trusted` names whose text is rendered verbatim (the human, the room).
  */
-export function renderDelta(entries: Entry[], forSeat: string): string {
+export function renderDelta(entries: Entry[], forSeat: string, trusted: string[] = []): string {
   const lines: string[] = [];
   for (const e of entries) {
     if (e.from === forSeat && e.kind === "message") continue;
     switch (e.kind) {
       case "message":
-        lines.push(`[${e.from}]: ${e.text}`);
+        lines.push(`[${e.from}]: ${trusted.includes(e.from) ? e.text : neutralizeLabels(e.text)}`);
         break;
       case "pass":
         lines.push(`[room]: ${e.from} passed.`);

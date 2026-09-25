@@ -51,7 +51,8 @@ export class CliSeat implements Seat {
   async *prompt(text: string): AsyncIterable<SeatEvent> {
     this.turns += 1;
     const turn = {
-      prompt: text,
+      // The prompt is a positional argument in every recipe; never let it read as a flag.
+      prompt: text.startsWith("-") ? ` ${text}` : text,
       sessionId: this.sid,
       cwd: this.cwd,
       scratchFile: join(this.scratchDir, `turn-${this.turns}.txt`),

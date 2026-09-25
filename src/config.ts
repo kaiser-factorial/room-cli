@@ -77,6 +77,7 @@ export function parseRoster(text: string, source: string): SeatConfig[] {
   return seats.map((raw, i) => {
     const s = raw as Record<string, unknown>;
     const name = str(s.name, `${source}: seats[${i}].name`);
+    validateSeatName(name, source);
     if (names.has(name)) throw new ConfigError(`${source}: duplicate seat name "${name}"`);
     names.add(name);
     const adapter = s.adapter ?? "acp";
@@ -172,6 +173,14 @@ export function pickSeats(roster: Roster, names: string[]): SeatConfig[] {
 }
 
 export class ConfigError extends Error {}
+
+/** Seat names are addresses (`@name`) and transcript labels, so they are restricted. */
+export function validateSeatName(name: string, source = "roster"): void {
+  if (!/^[A-Za-z0-9_-]+$/.test(name)) {
+    throw new ConfigError(`${source}: seat name "${name}" must be letters, digits, - or _ (it is used as @name)`);
+  }
+  if (name.toLowerCase() === "room") throw new ConfigError(`${source}: seat name "${name}" is reserved for the orchestrator`);
+}
 
 function str(v: unknown, what: string): string {
   if (typeof v !== "string" || v.length === 0) throw new ConfigError(`${what} must be a non-empty string`);

@@ -4,7 +4,8 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { commitTurn, ensureRoomBranch, isRepo } from "./git.js";
+import { ConfigError, validateSeatName } from "./config.js";
+import { commitTurn, ensureRoomBranch, headSha, headSubject, isRepo } from "./git.js";
 import { emptyPolicy, makeDecider, type Action, type HumanChoice, type Policy, type SeatPolicy } from "./permissions.js";
 import { buildPreamble, PASS } from "./preamble.js";
 import { parseAddress, Scheduler } from "./scheduler.js";
@@ -55,7 +56,15 @@ export class Room {
   private useGit = false;
   private stopped = false;
 
+  private busy = false;
+
   private constructor(readonly opts: RoomOptions) {
+    for (const s of opts.seats) {
+      validateSeatName(s.name, "room");
+      if (s.name.toLowerCase() === opts.human.toLowerCase()) {
+        throw new ConfigError(`seat "${s.name}" has the same name as the human; pick another --human or seat name`);
+      }
+    }
     this.stateDir = opts.stateDir ?? join(opts.cwd, ".room", opts.name);
     mkdirSync(this.stateDir, { recursive: true });
     // The default state dir lives inside the shared working directory; keep it out of git.
@@ -99,6 +108,22 @@ export class Room {
       onAllowAlways: (seat, pattern) => this.addRule(seat, "allow", pattern),
       log: (line) => ui.status(line),
     });
+    try {
+      await this.startSeats(decide);
+    } catch (err) {
+      // One seat failing must not leave the others running.
+      await Promise.all([...this.seats.values()].map((s) => s.stop().catch(() => undefined)));
+      this.seats.clear();
+      throw err;
+    }
+    this.saveState();
+    if (this.transcript.entries.length === 0) {
+      this.transcript.append("room", "system", `Room "${this.opts.name}" opened with seats ${this.seatNames.join(", ")} and ${this.opts.human}.`);
+    }
+  }
+
+  private async startSeats(decide: PermissionDecider): Promise<void> {
+    const { ui } = this.opts;
     await Promise.all(
       this.opts.seats.map(async (config) => {
         const seat = this.opts.makeSeat ? this.opts.makeSeat(config, decide) : createSeat(config, decide);
@@ -119,14 +144,11 @@ export class Room {
         );
       }),
     );
-    this.saveState();
-    if (this.transcript.entries.length === 0) {
-      this.transcript.append("room", "system", `Room "${this.opts.name}" opened with seats ${this.seatNames.join(", ")} and ${this.opts.human}.`);
-    }
   }
 
   /** The human speaks. A leading `@seat` routes the round to those seats only. */
   async say(text: string): Promise<void> {
+    if (this.busy) throw new Error("round in progress");
     const { targets, text: body } = parseAddress(text, this.seatNames);
     this.transcript.append(this.opts.human, "message", body);
     this.scheduler.fill(targets);
@@ -135,16 +157,23 @@ export class Room {
 
   /** Another round with no new human message. */
   async continueRound(seats?: string[]): Promise<void> {
+    if (this.busy) throw new Error("round in progress");
     this.scheduler.fill(seats);
     await this.runRound();
   }
 
   private async runRound(): Promise<void> {
-    let seat: string | undefined;
-    while (!this.stopped && (seat = this.scheduler.shift())) {
-      // Anything the human changed between turns is theirs, not the next seat's.
-      if (this.useGit) await this.commitHumanChanges(`changes before ${seat}'s turn`);
-      await this.runTurn(seat);
+    if (this.busy) throw new Error("round in progress");
+    this.busy = true;
+    try {
+      let seat: string | undefined;
+      while (!this.stopped && (seat = this.scheduler.shift())) {
+        // Anything the human changed between turns is theirs, not the next seat's.
+        if (this.useGit) await this.commitHumanChanges(`changes before ${seat}'s turn`);
+        await this.runTurn(seat);
+      }
+    } finally {
+      this.busy = false;
     }
   }
 
@@ -169,7 +198,8 @@ export class Room {
     const { ui } = this.opts;
     const first = this.state.cursors[name] === undefined;
     const delta = this.transcript.since(this.state.cursors[name] ?? 0);
-    const rendered = renderDelta(delta, name);
+    const rendered = renderDelta(delta, name, [this.opts.human, "room"]);
+    const headBefore = this.useGit ? await headSha(this.opts.cwd).catch(() => undefined) : undefined;
     const preamble = first
       ? buildPreamble({
           seat: config,
@@ -220,6 +250,13 @@ export class Room {
           const line = `${name} committed ${commit.sha}: ${commit.stat}`;
           ui.status(line);
           this.transcript.append("room", "commit", line);
+        }
+        // The preamble says not to; note it when a seat commits anyway, so history stays explainable.
+        const headAfter = await headSha(this.opts.cwd);
+        if (headBefore && headAfter !== headBefore && !commit) {
+          const line = `${name} committed directly: ${headAfter} ${await headSubject(this.opts.cwd)}`;
+          ui.status(line);
+          this.transcript.append("room", "system", line);
         }
       } catch (err) {
         ui.status(`${name}: commit failed: ${(err as Error).message}`);
