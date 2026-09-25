@@ -117,11 +117,27 @@ describe("hand-offs", () => {
     expect(speakers(room)).toEqual(["Corina:message", "a:message", "c:message", "b:message"]);
   });
 
-  it("addressing the human ends the round", async () => {
-    const { room, ui } = await openRoom({ a: ["@Corina your call"], b: ["should not run"] });
+  it("asking for the human is announced but does not cut the other seats off", async () => {
+    const { room, ui } = await openRoom({ a: ["@Corina your call"], b: ["b still runs"] });
     await room.say("go");
-    expect(speakers(room)).toEqual(["Corina:message", "a:message"]);
-    expect(ui.lines).toContain("a handed back to Corina; round ends");
+    expect(speakers(room)).toEqual(["Corina:message", "a:message", "b:message"]);
+    expect(ui.lines).toContain("a asked for Corina");
+  });
+
+  it("a mention in the middle of a reply is a citation, not a hand-off", async () => {
+    const { room } = await openRoom({
+      a: ["Thinking about this.\nAs @c said earlier, the loop is fine.\nSo I agree with b."],
+      b: ["b here"],
+      c: ["c should not be pulled in"],
+    });
+    await room.say("@a @b go");
+    expect(speakers(room)).toEqual(["Corina:message", "a:message", "b:message"]);
+  });
+
+  it("a mention on the last line is a hand-off", async () => {
+    const { room } = await openRoom({ a: ["Some analysis.\nMore analysis.\n@c your turn."], b: ["b"], c: ["c answers"] });
+    await room.say("@a @b go");
+    expect(speakers(room)).toEqual(["Corina:message", "a:message", "c:message", "b:message"]);
   });
 
   it("two seats volleying stop at the hand-off limit", async () => {

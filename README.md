@@ -55,10 +55,13 @@ grok> Changed names[i + 1] to names[i].
 ### Who speaks next
 
 - **Sequential** (default): your message starts a round in roster order.
-- **Hand-offs:** a seat that writes `@name` in its reply puts that seat
-  next, ahead of the rest of the round. `@<you>` hands back and ends the
-  round. Mentions inside code fences do not count. At most six extra turns
-  per human message, so two seats cannot volley forever.
+- **Hand-offs:** a seat that writes `@name` on the first or last line of
+  its reply puts that seat next, ahead of the rest of the round. A mention
+  in the middle ("as @grok said") is a citation and does nothing, so a seat
+  cannot steer the room from inside its prose. `@<you>` is announced and
+  does not cut the other seats off. Mentions inside code do not count. At
+  most six extra turns per human message, so two seats cannot volley
+  forever.
 - **Passing:** a seat replying `[pass]` is recorded as a pass. An empty
   line runs another round, skipping any seat that passed and has seen
   nothing new since.

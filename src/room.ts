@@ -244,16 +244,21 @@ export class Room {
     }
   }
 
-  /** A reply addressing another seat puts that seat next; addressing the human ends the round. */
+  /**
+   * A reply addressing another seat puts that seat next. An address is a
+   * mention on the reply's first or last line; one in the middle is a
+   * citation ("as @grok said") and is ignored, so a seat cannot steer the
+   * room from inside its prose. Asking for the human is announced, never
+   * lets one seat cut the others off.
+   */
   private handOff(from: string, text: string): void {
     const { ui } = this.opts;
-    const mentions = scanMentions(text, [...this.seatNames, this.opts.human]).filter((m) => m !== from);
-    if (mentions.some((m) => m.toLowerCase() === this.opts.human.toLowerCase())) {
-      if (this.scheduler.pending.length) ui.status(`${from} handed back to ${this.opts.human}; round ends`);
-      this.scheduler.clear();
-      return;
-    }
-    for (const m of mentions.reverse()) {
+    const lines = text.split("\n").filter((l) => l.trim());
+    const edges = lines.length <= 2 ? lines.join("\n") : `${lines[0]}\n${lines[lines.length - 1]}`;
+    const mentions = scanMentions(edges, [...this.seatNames, this.opts.human]).filter((m) => m !== from);
+    const human = this.opts.human.toLowerCase();
+    if (mentions.some((m) => m.toLowerCase() === human)) ui.status(`${from} asked for ${this.opts.human}`);
+    for (const m of mentions.filter((x) => x.toLowerCase() !== human).reverse()) {
       // Moving an already-queued seat forward is free; adding a turn counts.
       const extraTurn = !this.scheduler.pending.includes(m);
       if (extraTurn && this.handoffs >= MAX_HANDOFFS) {
