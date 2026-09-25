@@ -183,9 +183,17 @@ roomOptions(
   program
     .command("start [seats...]")
     .description("Open a room with the named seats (nothing joins by default) and talk in a REPL")
-    .option("--name <name>", "room name; transcript lives in .room/<name>/", "main"),
-).action(async (names: string[], opts: StartOptions & { name: string }) => {
-  await runRoom(opts.name, lineup(names, opts.roomFile), opts);
+    .option("--name <name>", "room name (default: main, or main-2, main-3, ... if taken); state lives in .room/<name>/"),
+).action(async (names: string[], opts: StartOptions & { name?: string }) => {
+  const cwd = resolve(opts.cwd);
+  if (opts.name && Room.exists(cwd, opts.name)) {
+    console.error(`room: a room named "${opts.name}" exists here; continue it with: room resume ${opts.name}`);
+    process.exit(EXIT.CONFIG);
+  }
+  const name = opts.name ?? Room.freshName(cwd);
+  const seats = lineup(names, opts.roomFile);
+  if (!opts.name && name !== "main") console.error(`room: opening a new room, "${name}" (room resume <name> continues an old one)`);
+  await runRoom(name, seats, opts);
 });
 
 roomOptions(

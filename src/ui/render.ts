@@ -29,16 +29,21 @@ export function compactDiff(oldText: string | undefined, newText: string, max = 
   return capped;
 }
 
-export function renderToolContent(content: ToolContentView[] | undefined, indent = "    "): string[] {
+export function renderToolContent(
+  content: ToolContentView[] | undefined,
+  indent = "    ",
+  outputMax = OUTPUT_MAX_LINES,
+  diffMax = DIFF_MAX_LINES,
+): string[] {
   if (!content) return [];
   const out: string[] = [];
   for (const c of content) {
     if (c.type === "diff") {
       out.push(`${indent}${c.path}`);
-      for (const l of compactDiff(c.oldText, c.newText)) out.push(`${indent}${l}`);
+      for (const l of compactDiff(c.oldText, c.newText, diffMax)) out.push(`${indent}${l}`);
     } else {
       const lines = c.text.replace(/\s+$/, "").split("\n");
-      const shown = lines.slice(0, OUTPUT_MAX_LINES);
+      const shown = lines.slice(0, outputMax);
       for (const l of shown) out.push(`${indent}│ ${l}`);
       if (lines.length > shown.length) out.push(`${indent}│ … ${lines.length - shown.length} more lines`);
     }

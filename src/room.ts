@@ -182,6 +182,12 @@ export class Room {
     return existsSync(join(stateDir ?? join(cwd, ".room", name), "state.json"));
   }
 
+  /** `base` if no room has that name in `cwd`, else `base-2`, `base-3`, ...: `start` always opens a new room. */
+  static freshName(cwd: string, base = "main"): string {
+    if (!Room.exists(cwd, base)) return base;
+    for (let i = 2; ; i++) if (!Room.exists(cwd, `${base}-${i}`)) return `${base}-${i}`;
+  }
+
   /** The seats a saved room last had, in order; older state files only know their sessions. */
   static savedSeats(cwd: string, name: string, stateDir?: string): string[] {
     const path = join(stateDir ?? join(cwd, ".room", name), "state.json");
@@ -269,6 +275,21 @@ export class Room {
       await Promise.all([...this.seats.values()].map((s) => s.stop().catch(() => undefined)));
       this.seats.clear();
       throw err;
+    }
+    // A reopened room with a different lineup: say so, or seats keep addressing whoever left.
+    const before = this.state.seats;
+    const left = before?.filter((s) => !this.seatNames.includes(s)) ?? [];
+    const joined = before ? this.seatNames.filter((s) => !before.includes(s)) : [];
+    if (left.length || joined.length) {
+      const parts = [
+        joined.length ? `${joined.join(", ")} joined` : "",
+        left.length ? `${left.join(", ")} left and cannot be addressed` : "",
+      ].filter(Boolean);
+      this.transcript.append(
+        "room",
+        "system",
+        `Room reopened. ${parts.join("; ")}. Seats now: ${this.seatNames.join(", ")}, and ${this.opts.human}.`,
+      );
     }
     this.state.seats = this.seatNames;
     this.saveState();

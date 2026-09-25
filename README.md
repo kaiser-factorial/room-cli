@@ -63,6 +63,10 @@ pnpm exec tsx scripts/smoke.ts claude hermes grok pool --editor grok   # phase 1
 
 ## In the room
 
+`room start` always opens a new room: `main`, or `main-2`, `main-3`, ... when
+that name is taken. `room resume <name>` continues one; a room reopened with
+a different lineup tells its seats who joined and who left.
+
 Each seat is one ACP session kept alive for the room. On its turn a seat gets
 only what was said since its last turn, labeled `[name]: text`, plus the room
 preamble on its first turn. Another seat's turn reads in the order it
@@ -127,13 +131,20 @@ grok> Changed names[i + 1] to names[i].
   [room] grok committed 60c2ccf: 1 file changed, 1 insertion(+), 1 deletion(-)
 ```
 
+Tool calls are one dim line each, with a short result and a number:
+`· grok: Edit calc.py (+2 -1) #3`, `` · grok: Execute `pnpm test` #4 `` then
+`↳ 88 passed`. `/show 4` prints a call in full (`/show grok` for a seat's
+latest), and `/verbose` streams everything. Thinking is one short line per
+stretch (`/thoughts full` streams it, `/thoughts off` hides it). Seats read
+each other's full work through git: every desk's branch is visible from
+every other desk.
+
 Each speaker gets its own block and colour, by harness: grok white, claude
 orange, codex purple, agy green, pool light blue (so laguna too), hermes
 amber. `colour = "teal"` (or a 256-colour index) in a roster entry
 overrides it; room lines, tool activity,
-and seats' thinking are dimmed. Thinking streams as it comes, so a seat's
-loop (think, run, think, reply) is visible live; `/thoughts off` folds each
-run of it to one line. Colour is off when stdout is not a terminal or `NO_COLOR` is
+and seats' thinking are dimmed, so a seat's loop (think, run, think,
+reply) reads live without drowning the replies. Colour is off when stdout is not a terminal or `NO_COLOR` is
 set. A commit note lists the files the turn changed.
 
 ### When a seat fails

@@ -13,12 +13,18 @@ import type { Room, RoomUI } from "../room.js";
 import type { PermissionRequestView, SeatEvent, ToolContentView } from "../seat/types.js";
 import { seatColour } from "./colours.js";
 import { renderToolContent } from "./render.js";
+import { ToolView } from "./tools.js";
+
+export type ThoughtMode = "brief" | "full" | "off";
+const THOUGHT_BRIEF = 110;
 
 const HELP = `commands:
   <text>                 say something; every seat answers in order
   @seat <text>           say something to one seat (several: @a @b)
   <empty line> or /next  another round with no new message
-  /thoughts [on|off]     stream seats' thinking, or fold it to one line
+  /thoughts [brief|full|off]  seats' thinking: a line per stretch (default), all of it, or none
+  /show [n|seat]         a tool call in full: #n from its line, a seat's latest, or the latest
+  /verbose [on|off]      tool calls in full as they stream, or one line each (default)
 ${COMMAND_HELP}
   /quit`;
 
@@ -147,10 +153,12 @@ export class ReplUI implements RoomUI {
   private tail = "\n\n";
   private readonly colours = new Map<string, (t: string) => string>();
   readonly style: ReturnType<typeof makeStyle>;
-  /** Stream seats' thinking (dimmed), or fold each run of it to one line. `/thoughts` toggles. */
-  showThoughts = true;
-  /** The seat whose folded "is thinking" line is already shown. */
-  private thinking?: string;
+  /** Seats' thinking: one short line per run (brief), all of it as it streams (full), or none. */
+  thoughts: ThoughtMode = "brief";
+  /** Tool calls: a line each with a short result (compact), or everything (`/verbose`). */
+  readonly tools = new ToolView();
+  /** A seat's current run of thinking, for brief mode: what came so far, and whether its line is out. */
+  private readonly thoughtRuns = new Map<string, { text: string; printed: boolean }>();
   /** Background seats' unfinished lines (`seat`, and `seat#thought`), printed whole. */
   private readonly bgPartial = new Map<string, string>();
   /** Permission questions one at a time, whichever seat asks. */
@@ -203,34 +211,67 @@ export class ReplUI implements RoomUI {
    */
   backgroundEvent(seat: string, ev: SeatEvent): void {
     const { dim } = this.style;
+    const brief = (line: string) => this.bgLine(seat, dim(`thinking: ${line}`));
+    if (ev.type !== "thought") this.endThought(seat, brief);
     switch (ev.type) {
       case "text":
         this.bgBuffer(seat, seat, sanitizeForTerminal(ev.text), (t) => t);
         break;
-      case "thought":
-        if (this.showThoughts) this.bgBuffer(seat, `${seat}#thought`, sanitizeForTerminal(ev.text), dim);
+      case "thought": {
+        const text = sanitizeForTerminal(ev.text);
+        if (this.thoughts === "full") this.bgBuffer(seat, `${seat}#thought`, text, dim);
+        else if (this.thoughts === "brief") this.briefThought(seat, text, brief);
         break;
+      }
       case "tool_call":
-        this.bgFlush(seat);
-        this.bgLine(seat, dim(`· ${sanitizeForTerminal(ev.title)}${ev.kind ? ` [${ev.kind}]` : ""}`));
-        for (const l of renderToolContent(ev.content, "  ")) this.bgLine(seat, dim(sanitizeForTerminal(l)));
+      case "tool_update": {
+        const lines = this.tools.lines(seat, ev);
+        if (lines.length) this.bgFlush(seat);
+        for (const l of lines) this.bgLine(seat, dim(sanitizeForTerminal(l)));
         break;
-      case "tool_update":
-        if (ev.content && ev.status !== "pending" && ev.status !== "in_progress") {
-          this.bgFlush(seat);
-          if (ev.title) this.bgLine(seat, dim(`· ${sanitizeForTerminal(ev.title)}${ev.status === "failed" ? " (failed)" : ""}`));
-          for (const l of renderToolContent(ev.content, "  ")) this.bgLine(seat, dim(sanitizeForTerminal(l)));
-        } else if (ev.status === "failed") {
-          this.bgFlush(seat);
-          this.bgLine(seat, dim(`· tool failed${ev.title ? `: ${sanitizeForTerminal(ev.title)}` : ""}`));
-        }
-        break;
+      }
       case "stop":
         this.bgFlush(seat);
+        for (const l of this.tools.unfinished(seat)) this.bgLine(seat, dim(sanitizeForTerminal(l)));
         break;
       default:
         break;
     }
+  }
+
+  /** Brief thinking: one line per run, out as soon as there is enough of it to read. */
+  private briefThought(seat: string, text: string, emit: (line: string) => void): void {
+    const run = this.thoughtRuns.get(seat) ?? { text: "", printed: false };
+    this.thoughtRuns.set(seat, run);
+    if (run.printed) return;
+    run.text += text;
+    const flat = run.text.replace(/\s+/g, " ").trim();
+    if (flat.length >= THOUGHT_BRIEF) {
+      emit(flat.slice(0, THOUGHT_BRIEF - 1) + "…");
+      run.printed = true;
+    }
+  }
+
+  private endThought(seat: string, emit: (line: string) => void): void {
+    const run = this.thoughtRuns.get(seat);
+    this.thoughtRuns.delete(seat);
+    const flat = run?.text.replace(/\s+/g, " ").trim();
+    if (run && !run.printed && flat) emit(flat);
+  }
+
+  /** `/show`: a tool call in full, by number, or a seat's latest, or the latest of all. */
+  show(which?: string): void {
+    const rec = this.tools.find(which);
+    if (!rec) {
+      this.status(which ? `no tool call ${which} (numbers are in the compact lines, e.g. #12)` : "no tool calls yet");
+      return;
+    }
+    this.gap();
+    this.out.write(`${this.style.bold(`#${rec.n}`)} ${this.seatName(rec.seat)}: ${sanitizeForTerminal(rec.title)}${rec.status ? ` (${rec.status})` : ""}\n`);
+    const lines = renderToolContent(rec.content, "  ", Infinity, Infinity);
+    for (const l of lines.length ? lines : ["  (no output)"]) this.out.write(sanitizeForTerminal(l) + "\n");
+    this.lineStart = true;
+    this.speaker = undefined;
   }
 
   private bgBuffer(seat: string, key: string, text: string, style: (t: string) => string): void {
@@ -275,12 +316,10 @@ export class ReplUI implements RoomUI {
 
   seatEvent(seat: string, ev: SeatEvent): void {
     const { dim } = this.style;
-    const visible =
-      ev.type === "text" ||
-      ev.type === "thought" ||
-      ev.type === "tool_call" ||
-      (ev.type === "tool_update" && (ev.content || ev.status === "failed"));
-    if (ev.type !== "thought") this.thinking = undefined;
+    const brief = (line: string) => this.toolish(dim(`  ${seat} thinking: ${line}`));
+    if (ev.type !== "thought") this.endThought(seat, brief);
+    const toolLines = ev.type === "tool_call" || ev.type === "tool_update" ? this.tools.lines(seat, ev) : [];
+    const visible = ev.type === "text" || (ev.type === "thought" && this.thoughts !== "off") || toolLines.length > 0;
     if (visible && this.lastSeat !== seat) {
       this.gap();
       this.lastSeat = seat;
@@ -301,15 +340,9 @@ export class ReplUI implements RoomUI {
       }
       case "thought": {
         const text = sanitizeForTerminal(ev.text);
-        if (!text) break;
-        if (!this.showThoughts) {
-          if (this.thinking !== seat) {
-            this.newline();
-            this.out.write(dim(`  · ${seat} is thinking…`) + "\n");
-            this.lineStart = true;
-            this.speaker = undefined;
-            this.thinking = seat;
-          }
+        if (!text || this.thoughts === "off") break;
+        if (this.thoughts === "brief") {
+          this.briefThought(seat, text, brief);
           break;
         }
         const header = `${seat}#thinking`;
@@ -324,36 +357,32 @@ export class ReplUI implements RoomUI {
         break;
       }
       case "tool_call":
-        this.newline();
-        this.out.write(dim(`  · ${seat}: ${sanitizeForTerminal(ev.title)}${ev.kind ? ` [${ev.kind}]` : ""}`) + "\n");
-        this.writeContent(ev.content);
-        this.lineStart = true;
-        this.speaker = undefined;
-        break;
       case "tool_update":
-        // Most harnesses send the diff or the output on the completing update.
-        if (ev.content && ev.status !== "pending" && ev.status !== "in_progress") {
-          this.newline();
-          if (ev.title) this.out.write(dim(`  · ${seat}: ${sanitizeForTerminal(ev.title)}${ev.status === "failed" ? " (failed)" : ""}`) + "\n");
-          this.writeContent(ev.content);
-          this.lineStart = true;
-          this.speaker = undefined;
-        } else if (ev.status === "failed") {
-          this.newline();
-          this.out.write(dim(`  · ${seat}: tool failed${ev.title ? `: ${sanitizeForTerminal(ev.title)}` : ""}`) + "\n");
-          this.lineStart = true;
-          this.speaker = undefined;
-        }
+        for (const l of toolLines) this.toolish(dim(this.toolLine(seat, l)));
         break;
       case "stop":
+        for (const l of this.tools.unfinished(seat)) this.toolish(dim(this.toolLine(seat, l)));
         this.newline();
         this.speaker = undefined;
-        this.thinking = undefined;
         this.lastSeat = undefined;
         break;
       default:
         break;
     }
+  }
+
+  /** `· title` heads a call as `  · seat: title`; its other lines indent under it. */
+  private toolLine(seat: string, line: string): string {
+    const clean = sanitizeForTerminal(line);
+    return clean.startsWith("· ") ? `  · ${seat}: ${clean.slice(2)}` : `    ${clean}`;
+  }
+
+  /** A whole dim line of its own, between a seat's text. */
+  private toolish(line: string): void {
+    this.newline();
+    this.out.write(line + "\n");
+    this.lineStart = true;
+    this.speaker = undefined;
   }
 
   private writeContent(content: ToolContentView[] | undefined): void {
@@ -412,10 +441,21 @@ export async function runRepl(room: Room, lines: LineSource, ui: ReplUI): Promis
       out.write(HELP + "\n");
       continue;
     }
-    if (text === "/thoughts" || text.startsWith("/thoughts ")) {
-      const arg = text.split(/\s+/)[1];
-      ui.showThoughts = arg === "on" ? true : arg === "off" ? false : !ui.showThoughts;
-      out.write(`  thinking: ${ui.showThoughts ? "streamed" : "folded to one line per turn"}\n`);
+    const [cmd, arg] = text.split(/\s+/);
+    if (cmd === "/thoughts") {
+      const modes: Record<string, ThoughtMode> = { on: "full", full: "full", brief: "brief", off: "off" };
+      ui.thoughts = modes[arg ?? ""] ?? (ui.thoughts === "brief" ? "full" : "brief");
+      const say = { brief: "one short line per stretch of thinking", full: "streamed in full", off: "hidden" };
+      out.write(`  thinking: ${say[ui.thoughts]}\n`);
+      continue;
+    }
+    if (cmd === "/verbose") {
+      ui.tools.detail = arg === "off" ? "compact" : arg === "on" ? "full" : ui.tools.detail === "full" ? "compact" : "full";
+      out.write(`  tool calls: ${ui.tools.detail === "full" ? "shown in full as they stream" : "one line each; /show <n> for one in full"}\n`);
+      continue;
+    }
+    if (cmd === "/show") {
+      ui.show(arg);
       continue;
     }
     if (text === "" || text === "/next") {
