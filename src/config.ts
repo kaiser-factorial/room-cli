@@ -83,9 +83,68 @@ export function parseRoster(text: string, source: string): SeatConfig[] {
       env: optStrMap(s.env, `${source}: seats[${i}].env`),
       model: typeof s.model === "string" ? s.model : undefined,
       role: typeof s.role === "string" ? s.role : undefined,
-      allowAlways: optStrArray(s.allowAlways, `${source}: seats[${i}].allowAlways`),
+      mode: typeof s.mode === "string" ? s.mode : undefined,
+      allow: optStrArray(s.allow, `${source}: seats[${i}].allow`),
+      ask: optStrArray(s.ask, `${source}: seats[${i}].ask`),
+      deny: optStrArray(s.deny, `${source}: seats[${i}].deny`),
     };
   });
+}
+
+/**
+ * A room file pins a lineup and per-seat overrides:
+ *
+ *   seats = ["claude", "grok"]
+ *   [modes]
+ *   claude = "default"
+ *   [policy.claude]
+ *   allow = ["read"]
+ *   [roles]
+ *   grok = "critic"
+ */
+export interface RoomFile {
+  seats?: string[];
+  modes?: Record<string, string>;
+  roles?: Record<string, string>;
+  policy?: Record<string, { allow?: string[]; ask?: string[]; deny?: string[] }>;
+}
+
+export function loadRoomFile(path: string): RoomFile {
+  if (!existsSync(path)) throw new ConfigError(`room file not found: ${path}`);
+  let doc: Record<string, unknown>;
+  try {
+    doc = parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+  } catch (err) {
+    throw new ConfigError(`${path}: ${(err as Error).message}`);
+  }
+  const out: RoomFile = {};
+  out.seats = optStrArray(doc.seats, `${path}: seats`);
+  out.modes = optStrMap(doc.modes, `${path}: modes`);
+  out.roles = optStrMap(doc.roles, `${path}: roles`);
+  if (doc.policy !== undefined) {
+    if (typeof doc.policy !== "object" || doc.policy === null) throw new ConfigError(`${path}: policy must be a table`);
+    out.policy = {};
+    for (const [seat, v] of Object.entries(doc.policy as Record<string, Record<string, unknown>>)) {
+      out.policy[seat] = {
+        allow: optStrArray(v.allow, `${path}: policy.${seat}.allow`),
+        ask: optStrArray(v.ask, `${path}: policy.${seat}.ask`),
+        deny: optStrArray(v.deny, `${path}: policy.${seat}.deny`),
+      };
+    }
+  }
+  return out;
+}
+
+/** Apply a room file's overrides to the picked seats. */
+export function applyRoomFile(seats: SeatConfig[], room: RoomFile): SeatConfig[] {
+  return seats.map((s) => ({
+    ...s,
+    mode: room.modes?.[s.name] ?? s.mode,
+    role: room.roles?.[s.name] ?? s.role,
+    allow: [...(s.allow ?? []), ...(room.policy?.[s.name]?.allow ?? [])],
+    ask: [...(s.ask ?? []), ...(room.policy?.[s.name]?.ask ?? [])],
+    deny: [...(s.deny ?? []), ...(room.policy?.[s.name]?.deny ?? [])],
+  }));
 }
 
 /** Pick seats by name, preserving the order given. Unknown names are an error. */

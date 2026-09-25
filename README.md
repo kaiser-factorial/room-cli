@@ -9,18 +9,88 @@ context window; the room holds only the transcript and the session ids. When
 a seat wants to do something gated, its `session/request_permission` is
 forwarded to you. Nothing is auto-approved unless a seat's own config says so.
 
-Design doc: *Joint Session CLI Design* (Claude Docs). This package is phase 0:
-the spikes and the scaffold.
+Design doc: *Joint Session CLI Design* (Claude Docs). Phases 0 and 1 are
+done: the doctor, and a sequential room with a streaming REPL.
 
 ## Commands
 
 ```bash
+npm run dev -- start claude grok hermes        # open a room; nothing joins by default
+npm run dev -- start --room-file rooms/review.toml
 npm run dev -- roster                 # the effective roster and where it came from
 npm run dev -- doctor                 # handshake every seat, print a table
 npm run dev -- doctor --deep          # also prove the permission round trip
 npm run dev -- doctor grok pool --json
 npm run dev -- spike claude "say hello and list the files here"
 npx tsx scripts/two-seats.ts grok     # do two seats of one harness stay separate?
+npx tsx scripts/smoke.ts claude hermes grok pool --editor grok   # phase 1 acceptance run
+```
+
+## In the room
+
+Each seat is one ACP session kept alive for the room. On its turn a seat gets
+only what was said since its last turn, labeled `[name]: text`, plus the room
+preamble on its first turn. Your message starts a round in roster order; a
+leading `@seat` sends it to that seat only; an empty line runs another round
+with nothing new. A seat replying `[pass]` is recorded as a pass. When the
+working directory is a git repo the room checks out `room/<name>` and commits
+after every turn that changed files, with the seat as author, so `git log`
+and `git blame` say who did what. State lives in `.room/<name>/`
+(transcript.jsonl, state.json), which the room keeps out of git.
+
+```
+Corina> look at hello.py and tell me what is wrong
+  · claude: Read File [read]
+claude> `hello.py:5` indexes names[i + 1] ...
+grok> Same read: off-by-one on line 5.
+Corina> @grok fix it
+  · grok: search_replace
+? grok wants: Edit `hello.py` [edit]
+  [a] allow  [A] always (room rule)  [d] deny  [c] cancel turn > a
+grok> Changed names[i + 1] to names[i].
+  [room] grok committed 60c2ccf: 1 file changed, 1 insertion(+), 1 deletion(-)
+```
+
+### Permissions, two levers
+
+**Room policy** works for every seat, because it sits in the orchestrator.
+Rules match a tool call's kind (`read`, `edit`, `execute`, ...) or its title
+with `*` wildcards. Deny beats ask beats allow; anything unmatched asks you.
+Answering `A` at a prompt adds an allow rule for that kind. Rules persist in
+the room's `state.json`, and can be pinned in the roster or a room file.
+
+```
+/perm grok                       show
+/perm grok allow read            never ask grok before reads
+/perm grok deny "Bash rm *"      never allow this, do not even ask
+/unperm grok read
+```
+
+**Harness modes** are the seat's own permission setting, changed over ACP.
+claude, hermes, and codex advertise them; the room switches each to its
+asking mode at start (`default`, `default`, `read-only`), or to `mode` from
+the config. grok and pool advertise none, so their config files are the lever.
+
+```
+/mode claude                     list modes, current marked
+/mode claude acceptEdits
+```
+
+### Room file
+
+```toml
+seats = ["claude", "grok", "hermes"]
+
+[modes]
+claude = "default"
+
+[roles]
+grok = "critic"          # a preset from the web app's roles.ts
+
+[policy.claude]
+allow = ["read"]
+[policy.grok]
+deny = ["Bash rm *"]
 ```
 
 `doctor --deep` opens a session per seat in a scratch directory and asks it
@@ -45,8 +115,11 @@ name = "claude"
 adapter = "acp"                 # "acp" (default) or "cli" (phase 2 fallback)
 command = "claude-agent-acp"    # resolved on PATH plus the workspace .bin dirs
 args = []
-role = "critic"                 # a preset from the web app's roles.ts (phase 1)
-allowAlways = []                # tool titles this seat may run without asking
+role = "critic"                 # a preset from the web app's roles.ts
+mode = "default"                # session mode to set at start, if advertised
+allow = ["read"]                # room policy: kinds or title globs
+ask = []
+deny = ["Bash rm *"]
 
 [[seats]]
 name = "pool"

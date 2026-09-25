@@ -164,6 +164,9 @@ export class AcpSeat implements Seat {
     if (!session) throw new Error(`${this.name}: no session`);
     // The returned promise also queues a `stop` message; reading updates is enough.
     session.prompt(text).catch(() => undefined);
+    // Chunks of one message share a messageId; a new id after text is a paragraph break.
+    let lastMessageId: string | null | undefined;
+    let emittedText = false;
     for (;;) {
       const msg = await session.nextUpdate();
       if (msg.kind === "stop") {
@@ -173,8 +176,13 @@ export class AcpSeat implements Seat {
       const u = msg.update;
       switch (u.sessionUpdate) {
         case "agent_message_chunk":
-          if (u.content.type === "text") yield { type: "text", text: u.content.text };
-          else yield { type: "other", update: `content:${u.content.type}` };
+          if (u.content.type === "text") {
+            const id = u.messageId ?? null;
+            if (emittedText && id !== lastMessageId && id !== null) yield { type: "text", text: "\n\n" };
+            lastMessageId = id;
+            emittedText = true;
+            yield { type: "text", text: u.content.text };
+          } else yield { type: "other", update: `content:${u.content.type}` };
           break;
         case "agent_thought_chunk":
           if (u.content.type === "text") yield { type: "thought", text: u.content.text };

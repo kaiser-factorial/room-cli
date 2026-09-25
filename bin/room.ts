@@ -4,13 +4,17 @@
  *
  * Phase 0 commands: `doctor`, `roster`, `spike`.
  */
+import { resolve } from "node:path";
+import { createInterface } from "node:readline";
 import readline from "node:readline/promises";
 import { Command } from "commander";
-import { ConfigError, loadRoster, pickSeats } from "../src/config.js";
+import { applyRoomFile, ConfigError, loadRoomFile, loadRoster, pickSeats } from "../src/config.js";
 import { runDoctor, type DoctorRow } from "../src/doctor.js";
 import { EXIT } from "../src/exit-codes.js";
+import { Room } from "../src/room.js";
 import { AcpSeat } from "../src/seat/acp.js";
 import type { PermissionRequestView } from "../src/seat/types.js";
+import { LineSource, ReplUI, runRepl } from "../src/ui/repl.js";
 
 const program = new Command();
 program
@@ -107,6 +111,52 @@ program
       await seat.stop();
     }
   });
+
+program
+  .command("start [seats...]")
+  .description("Open a room with the named seats (nothing joins by default) and talk in a REPL")
+  .option("--name <name>", "room name; transcript lives in .room/<name>/", "main")
+  .option("--cwd <dir>", "working directory the seats share", process.cwd())
+  .option("--human <name>", "your name in the transcript", "Corina")
+  .option("--room-file <file>", "TOML with seats, modes, roles, and policy")
+  .option("--no-git", "do not branch or commit per turn")
+  .option("--turn-timeout <seconds>", "per-turn timeout", "600")
+  .action(
+    async (
+      names: string[],
+      opts: { name: string; cwd: string; human: string; roomFile?: string; git: boolean; turnTimeout: string },
+    ) => {
+      const roster = withConfig(() => loadRoster(program.opts().roster));
+      const file = opts.roomFile ? withConfig(() => loadRoomFile(opts.roomFile!)) : undefined;
+      const wanted = names.length ? names : (file?.seats ?? []);
+      if (wanted.length === 0) {
+        console.error(`room: name the seats to open, e.g. room start claude grok (roster has: ${roster.seats.map((s) => s.name).join(", ")})`);
+        process.exit(EXIT.CONFIG);
+      }
+      let seats = withConfig(() => pickSeats(roster, wanted));
+      if (file) seats = applyRoomFile(seats, file);
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      const lines = new LineSource(rl);
+      const ui = new ReplUI(lines);
+      const room = await Room.open({
+        name: opts.name,
+        cwd: resolve(opts.cwd),
+        seats,
+        human: opts.human,
+        ui,
+        git: opts.git ? undefined : false,
+        turnTimeoutMs: Number(opts.turnTimeout) * 1000,
+      });
+      ui.status(`starting ${seats.map((s) => s.name).join(", ")} in ${resolve(opts.cwd)}`);
+      try {
+        await room.start();
+        await runRepl(room, lines, ui);
+      } finally {
+        rl.close();
+        await room.stop();
+      }
+    },
+  );
 
 async function askHuman(rl: readline.Interface, req: PermissionRequestView): Promise<string | "cancel"> {
   console.error(`\n[${req.seat}] wants: ${req.title} (${req.kind ?? "tool"})`);

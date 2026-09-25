@@ -14,10 +14,14 @@ export interface SeatConfig {
   env?: Record<string, string>;
   /** Model override, passed through when the adapter supports it. */
   model?: string;
-  /** Role preset id from the web app's roles.ts, applied in the preamble (phase 1). */
+  /** Role preset id from the web app's roles.ts, applied in the preamble. */
   role?: string;
-  /** Tool titles or kinds this seat may run without asking. Persisted per room. */
-  allowAlways?: string[];
+  /** Session mode to set at session start, when the agent advertises modes. Default: the one that asks. */
+  mode?: string;
+  /** Room policy: tool kinds or title patterns. Deny beats ask beats allow. */
+  allow?: string[];
+  ask?: string[];
+  deny?: string[];
 }
 
 export interface SeatInfo {
@@ -70,4 +74,7 @@ export interface Seat {
   stop(): Promise<void>;
   /** Last few KB of the agent's stderr, for diagnostics. */
   stderrTail(): string;
+  /** Session modes, when the agent advertises them. */
+  readonly modes?: { current?: string; available: Array<{ id: string; name: string }> };
+  setMode?(modeId: string): Promise<void>;
 }

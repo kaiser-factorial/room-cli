@@ -8,6 +8,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AcpSeat, withTimeout } from "./seat/acp.js";
+import { pickAskMode } from "./seat/modes.js";
 import type { PermissionRequestView, SeatConfig, SeatEvent } from "./seat/types.js";
 import { EXIT, type ExitCode, worst } from "./exit-codes.js";
 
@@ -185,15 +186,11 @@ async function checkSeat(config: SeatConfig, opts: DoctorOptions): Promise<Docto
         if (configOptions.length) row.deep!.configOptions = configOptions;
         if (modes) {
           row.deep!.modes = modes;
-          // Prefer the mode that asks. Agents name it differently; "default" is the ACP convention.
-          // claude/hermes: "default"; codex-acp: "read-only" is its "Ask for approval" mode.
-          const ask = modes.available.find(
-            (m) => /^(default|ask|normal|interactive|read-only)$/i.test(m.id) || /ask/i.test(m.name),
-          );
-          if (ask && modes.current !== ask.id) {
-            log(`switching mode ${modes.current ?? "?"} -> ${ask.id}`);
-            await seat.setMode(ask.id).catch((err) => log(`set_mode failed: ${(err as Error).message}`));
-            row.deep!.modes = { ...modes, current: ask.id };
+          const ask = pickAskMode(modes);
+          if (ask && modes.current !== ask) {
+            log(`switching mode ${modes.current ?? "?"} -> ${ask}`);
+            await seat.setMode(ask).catch((err) => log(`set_mode failed: ${(err as Error).message}`));
+            row.deep!.modes = { ...modes, current: ask };
           }
         } else {
           // No modes advertised. Some agents still accept the conventional id.

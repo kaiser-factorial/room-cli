@@ -5,7 +5,7 @@
   "type": "module",
   "private": true,
   "bin": {
-    "room": "./dist/bin/room.js"
+    "room": "./dist/packages/room/bin/room.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

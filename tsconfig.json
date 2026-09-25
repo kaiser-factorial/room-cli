@@ -11,8 +11,8 @@
     "declaration": true,
     "sourceMap": true,
     "outDir": "./dist",
-    "rootDir": "."
+    "rootDir": "../.."
   },
-  "include": ["src", "bin", "scripts"],
+  "include": ["src", "bin", "scripts", "../../src/lib/roles.ts"],
   "exclude": ["dist", "node_modules", "test"]
 }
