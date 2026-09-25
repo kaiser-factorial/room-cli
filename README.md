@@ -160,17 +160,24 @@ branch. What changes from the REPL:
   does not) reopens the room and reattaches every seat to its session.
 - MCP servers the editor offers are ignored: seats bring their own.
 
-Zed, in `settings.json` (not yet tried against Zed itself; the protocol
-side is tested with a real client over stdio):
+Zed, in `settings.json` (format from Zed's external-agents docs; not yet
+tried against Zed itself, the protocol side is tested with a real client
+over stdio). Use absolute paths: Zed may not have your shell's PATH.
 
 ```json
 "agent_servers": {
   "room": {
-    "command": "npx",
-    "args": ["tsx", "/path/to/joint-session/packages/room/bin/room.ts", "acp", "claude", "grok"]
+    "type": "custom",
+    "command": "/path/to/joint-session/node_modules/.bin/tsx",
+    "args": ["/path/to/joint-session/packages/room/bin/room.ts", "acp", "claude", "grok"],
+    "env": {}
   }
 }
 ```
+
+Open a scratch repo, not this one: every thread checks out its own
+`room/<name>` branch in the project. `dev: open acp logs` in Zed's command
+palette shows the traffic.
 
 The roster is looked up from the directory the editor starts the agent in;
 pass `--roster <file>` before `acp` to pin it.

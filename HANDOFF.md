@@ -94,7 +94,7 @@ the API key (`args = ["--model", ...]` or the adapter's env).
 
 Still to do for phase 4: register it in Zed (`agent_servers`, see README)
 and VS Code's ACP client, and watch it with real seats. The Zed settings
-shape in the README is from memory; check it against Zed's docs.
+shape in the README follows Zed's external-agents docs (`"type": "custom"`).
 
 ## Known warts
 
