@@ -4,6 +4,7 @@
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
+import type { Step } from "./activity.js";
 
 export type EntryKind = "message" | "pass" | "commit" | "system";
 
@@ -15,7 +16,9 @@ export interface Entry {
   from: string;
   kind: EntryKind;
   text: string;
-  /** The tool calls a seat made in the turn this entry closes, one line each. */
+  /** The turn this entry closes, in order, when the seat made tool calls in it. */
+  steps?: { seat: string; items: Step[] };
+  /** Older rooms: the turn's tool calls, unordered. Read, no longer written. */
   activity?: { seat: string; lines: string[] };
 }
 
@@ -49,9 +52,9 @@ export class Transcript {
     return this.entries.length ? this.entries[this.entries.length - 1].id : 0;
   }
 
-  append(from: string, kind: EntryKind, text: string, activity?: Entry["activity"]): Entry {
+  append(from: string, kind: EntryKind, text: string, steps?: Entry["steps"]): Entry {
     const entry: Entry = { id: this.last + 1, ts: new Date().toISOString(), from, kind, text };
-    if (activity?.lines.length) entry.activity = activity;
+    if (steps?.items.some((i) => "tool" in i)) entry.steps = steps;
     this.entries.push(entry);
     appendFileSync(this.path, JSON.stringify(entry) + "\n");
     return entry;
@@ -86,11 +89,23 @@ export function neutralizeLabels(text: string): string {
 export function renderDelta(entries: Entry[], forSeat: string, trusted: string[] = []): string {
   const lines: string[] = [];
   for (const e of entries) {
-    // Another seat's work comes first, from the room: what it ran and changed, then what it said.
     if (e.activity && e.activity.seat !== forSeat) {
       lines.push(`[room]: ${e.activity.seat}'s tool calls this turn:\n${e.activity.lines.map((l) => `  - ${l}`).join("\n")}`);
     }
     if (e.from === forSeat && (e.kind === "message" || e.kind === "pass")) continue;
+    // Another seat's turn with tool calls reads in the order it happened: each call is
+    // the room's line, what the seat said between them is the seat's.
+    if (e.steps && e.steps.seat !== forSeat) {
+      const seat = e.steps.seat;
+      const own = e.kind === "message" && e.from === seat;
+      const turn = e.steps.items
+        .filter((i) => own || "tool" in i)
+        .map((i) => ("tool" in i ? `[room]: ${seat} tool: ${i.tool}` : `[${seat}]: ${neutralizeLabels(i.text)}`));
+      if (e.kind === "pass") turn.push(`[room]: ${seat} passed.`);
+      if (e.kind === "system" || e.kind === "commit") turn.push(`[room]: ${e.text}`);
+      lines.push(turn.join("\n"));
+      continue;
+    }
     switch (e.kind) {
       case "message":
         lines.push(`[${e.from}]: ${trusted.includes(e.from) ? e.text : neutralizeLabels(e.text)}`);

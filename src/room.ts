@@ -465,7 +465,7 @@ export class Room {
    */
   private recordTurn(name: string, r: TurnResult): Entry {
     const reply = r.text.trim();
-    const activity = { seat: name, lines: r.activity.lines() };
+    const steps = r.activity.used ? { seat: name, items: r.activity.steps() } : undefined;
     const sid = this.seats.get(name)?.sessionId;
     if (sid) this.state.sessions[name] = sid;
     if (r.failure) {
@@ -475,12 +475,12 @@ export class Room {
       const partial = reply && !failure.includes(reply.replace(/\s+/g, " "))
         ? `\nWhat it wrote before failing:\n${neutralizeLabels(reply)}`
         : "";
-      return this.transcript.append("room", "system", `${name}'s turn failed: ${failure}${partial}`, activity);
+      return this.transcript.append("room", "system", `${name}'s turn failed: ${failure}${partial}`, steps);
     }
     this.lastFailure.delete(name);
     return !reply || reply === PASS || r.stopReason === "cancelled"
-      ? this.transcript.append(name, "pass", "", activity)
-      : this.transcript.append(name, "message", reply, activity);
+      ? this.transcript.append(name, "pass", "", steps)
+      : this.transcript.append(name, "message", reply, steps);
   }
 
   /** Bench a seat whose failures will not clear by themselves. */

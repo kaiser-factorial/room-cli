@@ -65,10 +65,17 @@ pnpm exec tsx scripts/smoke.ts claude hermes grok pool --editor grok   # phase 1
 
 Each seat is one ACP session kept alive for the room. On its turn a seat gets
 only what was said since its last turn, labeled `[name]: text`, plus the room
-preamble on its first turn. Before another seat's reply it also gets, from
-the room, that seat's tool calls for the turn, one line each with how they
-ended (`Edit calc.py (+2 -1)`, `` Execute `pytest -q` → 1 failed, 3 passed ``),
-so it can build on the work and not only on the summary. Your message starts a round in roster order; a
+preamble on its first turn. Another seat's turn reads in the order it
+happened: each tool call is a room line with how it ended, and what the
+seat said between calls keeps its label, so a seat can build on the work
+and not only on its summary:
+
+```
+[room]: grok tool: Execute `pytest -q` → 1 failed, 3 passed
+[grok]: One failure, in calc. Fixing the sign.
+[room]: grok tool: Edit calc.py (+1 -1)
+[grok]: Fixed. Re-running.
+``` Your message starts a round in roster order; a
 leading `@seat` sends it to that seat only; an empty line runs another round
 with nothing new. A seat replying `[pass]` is recorded as a pass. When the
 working directory is a git repo the room checks out `room/<name>` and commits

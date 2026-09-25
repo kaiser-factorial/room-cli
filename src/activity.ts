@@ -1,12 +1,10 @@
 /**
- * What a seat did during a turn, besides talk: the tool calls it made and
- * how each ended. The next seats read this from the room alongside the
- * reply, so they can build on the work and not only on its summary.
+ * A seat's turn in order: what it said, and the tool calls it made between,
+ * each with how it ended. The next seats read the turn in that order, so
+ * "that didn't work, trying the other file" still follows what didn't work.
  */
 import type { SeatEvent, ToolContentView } from "./seat/types.js";
 
-/** Tool lines kept per turn; a long exploration keeps its first and last. */
-export const ACTIVITY_MAX = 16;
 const LINE_MAX = 160;
 
 interface Call {
@@ -58,12 +56,28 @@ function firstOutput(content: ToolContentView[] | undefined): string | undefined
   return undefined;
 }
 
+/** One step of a turn, in order: something the seat said, or a tool call it made. */
+export type Step = { text: string } | { tool: string };
+
+/**
+ * A tool run longer than this keeps its first and last calls: a long
+ * exploration stays readable without dropping how it began and ended.
+ */
+export const RUN_MAX = 8;
+
 export class Activity {
   private readonly calls = new Map<string, Call>();
+  /** The turn in order. A tool step names its call, which later updates keep current. */
+  private readonly order: Array<{ text: string } | { call: string }> = [];
 
   observe(ev: SeatEvent): void {
-    if (ev.type === "tool_call") {
+    if (ev.type === "text") {
+      const last = this.order.at(-1);
+      if (last && "text" in last) last.text += ev.text;
+      else this.order.push({ text: ev.text });
+    } else if (ev.type === "tool_call") {
       const counts = diffCounts(ev.content);
+      if (!this.calls.has(ev.id)) this.order.push({ call: ev.id });
       this.calls.set(ev.id, {
         title: ev.title,
         kind: ev.kind,
@@ -73,7 +87,11 @@ export class Activity {
         output: firstOutput(ev.content),
       });
     } else if (ev.type === "tool_update") {
-      const call = this.calls.get(ev.id) ?? { title: ev.title ?? "tool", locations: [], added: 0, removed: 0 };
+      let call = this.calls.get(ev.id);
+      if (!call) {
+        call = { title: ev.title ?? "tool", locations: [], added: 0, removed: 0 };
+        this.order.push({ call: ev.id });
+      }
       if (ev.title) call.title = ev.title;
       if (ev.status) call.status = ev.status;
       if (ev.locations?.length) call.locations = ev.locations;
@@ -86,23 +104,45 @@ export class Activity {
     }
   }
 
-  get size(): number {
-    return this.calls.size;
+  /** Whether the seat made any tool call this turn. */
+  get used(): boolean {
+    return this.calls.size > 0;
   }
 
-  /** `Edit hello.py (+3 -1)`, `Execute \`ls\` → hello.py`, `Write x (failed)`, one per call. */
-  lines(max = ACTIVITY_MAX): string[] {
-    const all = [...this.calls.values()].map((c) => {
-      const where = c.locations.length && !c.locations.some((l) => c.title.includes(l.split("/").pop() ?? l))
-        ? ` ${c.locations.map((l) => l.split("/").pop()).join(", ")}`
-        : "";
-      const diff = c.added || c.removed ? ` (+${c.added} -${c.removed})` : "";
-      const out = c.output && c.kind === "execute" ? ` → ${c.output}` : "";
-      const end = c.status === "failed" ? " (failed)" : c.status === "pending" || c.status === "in_progress" ? " (did not finish)" : "";
-      return oneLine(`${c.title}${where}${diff}${out}${end}`);
-    });
-    if (all.length <= max) return all;
-    const head = all.slice(0, max - 4);
-    return [...head, `… ${all.length - max + 1} more`, ...all.slice(-3)];
+  /**
+   * The turn in order: what the seat said between its tool calls, and each
+   * call as one line (`Edit hello.py (+3 -1)`, `` Execute `ls` → hello.py ``,
+   * `Write x (failed)`). Long runs of calls keep their first and last.
+   */
+  steps(runMax = RUN_MAX): Step[] {
+    const out: Step[] = [];
+    let run: string[] = [];
+    const flush = () => {
+      if (run.length > runMax) run = [...run.slice(0, runMax - 3), `… ${run.length - runMax + 1} more`, ...run.slice(-2)];
+      for (const tool of run) out.push({ tool });
+      run = [];
+    };
+    for (const o of this.order) {
+      if ("call" in o) {
+        run.push(describe(this.calls.get(o.call)!));
+        continue;
+      }
+      const text = o.text.trim();
+      if (!text) continue;
+      flush();
+      out.push({ text });
+    }
+    flush();
+    return out;
   }
+}
+
+function describe(c: Call): string {
+  const where = c.locations.length && !c.locations.some((l) => c.title.includes(l.split("/").pop() ?? l))
+    ? ` ${c.locations.map((l) => l.split("/").pop()).join(", ")}`
+    : "";
+  const diff = c.added || c.removed ? ` (+${c.added} -${c.removed})` : "";
+  const out = c.output && c.kind === "execute" ? ` → ${c.output}` : "";
+  const end = c.status === "failed" ? " (failed)" : c.status === "pending" || c.status === "in_progress" ? " (did not finish)" : "";
+  return oneLine(`${c.title}${where}${diff}${out}${end}`);
 }
