@@ -18,6 +18,8 @@ import { Room } from "../src/room.js";
 import { AcpSeat } from "../src/seat/acp.js";
 import type { PermissionRequestView, SeatConfig } from "../src/seat/types.js";
 import { serveAcp } from "../src/server/acp.js";
+import { runTui, TuiUI } from "../src/ui/tui/run.js";
+import { TuiStore } from "../src/ui/tui/store.js";
 import { LineSource, ReplUI, runRepl } from "../src/ui/repl.js";
 
 const program = new Command();
@@ -124,6 +126,7 @@ interface StartOptions {
   desks: boolean;
   parallel?: boolean;
   auto?: boolean;
+  tui?: boolean;
   turnTimeout: string;
 }
 
@@ -136,6 +139,7 @@ function roomOptions(cmd: Command): Command {
     .option("--no-desks", "seats share one working directory instead of a worktree each")
     .option("--parallel", "start in parallel discussion mode")
     .option("--auto", "tool calls run without asking you, except deny and ask rules")
+    .option("--tui", "full-screen terminal UI: live seat boxes, a status bar, and the input always open")
     .option("--turn-timeout <seconds>", "per-turn timeout", "600");
 }
 
@@ -154,6 +158,28 @@ function lineup(names: string[], roomFile: string | undefined, fallback: string[
 
 async function runRoom(name: string, seats: SeatConfig[], opts: StartOptions): Promise<void> {
   const cwd = resolve(opts.cwd);
+  if (opts.tui) {
+    const store = new TuiStore();
+    const room = await Room.open({
+      name,
+      cwd,
+      seats,
+      human: opts.human,
+      ui: new TuiUI(store),
+      git: opts.git ? undefined : false,
+      desks: opts.desks,
+      auto: opts.auto,
+      mode: opts.parallel ? "parallel" : undefined,
+      turnTimeoutMs: Number(opts.turnTimeout) * 1000,
+    });
+    store.status(`room "${name}" with ${seats.map((s) => s.name).join(", ")} in ${cwd}. /help for commands, Ctrl+C to cancel a round.`);
+    try {
+      await runTui(room, store, room.start());
+    } finally {
+      await room.stop();
+    }
+    return;
+  }
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const lines = new LineSource(rl);
   const ui = new ReplUI(lines);

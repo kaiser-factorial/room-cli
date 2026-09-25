@@ -29,6 +29,17 @@ export function compactDiff(oldText: string | undefined, newText: string, max = 
   return capped;
 }
 
+/**
+ * A path as a person reads it: inside a seat's desk, relative to the desk
+ * (`src/calc.py`, not `/Users/.../.room/main/desks/grok/src/calc.py`);
+ * inside the working directory, relative to it.
+ */
+export function shortPath(path: string, cwd = process.cwd()): string {
+  const desk = /\/\.room\/[^/]+\/desks\/[^/]+\/(.+)$/.exec(path);
+  if (desk) return desk[1];
+  return path.startsWith(cwd + "/") ? path.slice(cwd.length + 1) : path;
+}
+
 export function renderToolContent(
   content: ToolContentView[] | undefined,
   indent = "    ",
@@ -39,7 +50,7 @@ export function renderToolContent(
   const out: string[] = [];
   for (const c of content) {
     if (c.type === "diff") {
-      out.push(`${indent}${c.path}`);
+      out.push(`${indent}${shortPath(c.path)}`);
       for (const l of compactDiff(c.oldText, c.newText, diffMax)) out.push(`${indent}${l}`);
     } else {
       const lines = c.text.replace(/\s+$/, "").split("\n");

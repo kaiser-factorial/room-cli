@@ -18,7 +18,7 @@ import { ToolView } from "./tools.js";
 export type ThoughtMode = "brief" | "full" | "off";
 const THOUGHT_BRIEF = 110;
 
-const HELP = `commands:
+export const HELP = `commands:
   <text>                 say something; every seat answers in order
   @seat <text>           say something to one seat (several: @a @b)
   <empty line> or /next  another round with no new message

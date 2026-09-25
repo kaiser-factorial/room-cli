@@ -3,16 +3,30 @@
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "lib": ["ES2023"],
-    "types": ["node"],
+    "lib": [
+      "ES2023"
+    ],
+    "types": [
+      "node"
+    ],
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "declaration": true,
     "sourceMap": true,
     "outDir": "./dist",
-    "rootDir": "../.."
+    "rootDir": "../..",
+    "jsx": "react-jsx"
   },
-  "include": ["src", "bin", "scripts", "../../src/lib/roles.ts"],
-  "exclude": ["dist", "node_modules", "test"]
+  "include": [
+    "src",
+    "bin",
+    "scripts",
+    "../../src/lib/roles.ts"
+  ],
+  "exclude": [
+    "dist",
+    "node_modules",
+    "test"
+  ]
 }

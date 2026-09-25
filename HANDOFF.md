@@ -17,7 +17,7 @@ Design", https://claude.ai/code/artifact/8624261e-8ed2-45ea-ad01-d8b06166e1e1
 | tool visibility (diffs, command output in the REPL) | done |
 | 4 room as an ACP agent + resume | done; works in Zed (2026-09-25) |
 | packaging: own pnpm package, `room` command | done; CI job `room` |
-| 5 Ink TUI | optional |
+| 5 Ink TUI (`--tui`) | first version; REPL stays the default |
 | 6 desks: a worktree per seat, landing on the trunk | done; background turns next |
 
 Tests: `pnpm install && pnpm test` in `packages/room`, 63 tests, run
@@ -157,6 +157,18 @@ background seat's permission question can sit over the human's prompt;
 `ReplUI.askHuman` asks one question at a time. `stopBackground` keeps
 cancelling until the turn ends, since a stop can arrive while the desk is
 still syncing, before the seat has the prompt.
+
+## Phase 5: the TUI
+
+`src/ui/tui/`: `store.ts` turns room events into blocks (finished ones for
+Ink's <Static>, so they go to real scrollback; live ones per seat, `seat` or
+`seat#bg`), a per-seat "doing" line, and a queue of permission questions.
+`app.tsx` renders it: live seat boxes showing their last 14 lines, a status
+bar, and the input or a question bar. `run.tsx` connects a Room (TuiUI is
+its RoomUI) and handles input, commands, and Ctrl+C. Tests render frames
+with ink-testing-library; `pyte` in a pty was used to check real screens.
+Not yet: input history, markdown rendering, a way to page through a long
+live reply, and seats' prompts to one another shown as typing.
 
 ## Known warts
 

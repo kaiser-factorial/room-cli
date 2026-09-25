@@ -44,10 +44,29 @@ them from anywhere. Seats with their own binaries (grok, hermes, pool) come
 from your PATH. agy's adapter is optional: its install script needs bun,
 and pnpm does not run it anyway; the room points it at your own `agy`.
 
+## The TUI
+
+`room start claude grok --tui` (also on `resume`) opens the room in a
+terminal UI built with Ink:
+
+- Finished turns print into the terminal's own scrollback, so scrolling,
+  search, and copy work as usual.
+- Above the input, each seat mid-turn has a live box showing its latest
+  lines; a background seat's box has a bar in its colour.
+- A status bar shows what every seat is doing: `● claude writing…`,
+  `● grok (bg) · Execute pnpm test`, `○ agy idle`, benched seats in grey,
+  and flags like `auto` and `parallel`.
+- The input stays open while seats work; lines are sent in the order typed.
+  A permission question replaces it with a boxed bar showing the change,
+  answered with one key (a, A, d, c); more waiting are counted.
+- Ctrl+C cancels the running round; a second Ctrl+C quits.
+- Same commands as the REPL, including `/show`, `/verbose`, `/thoughts`.
+
 ## Commands
 
 ```bash
 room start claude grok hermes        # open a room; nothing joins by default
+room start claude grok --tui         # the same, in the terminal UI
 room start --room-file rooms/review.toml
 room resume main                     # reopen a saved room with the seats it had
 room acp claude grok                 # serve the room to an editor over ACP on stdio
