@@ -22,6 +22,11 @@ export class Scheduler {
     this.queue = [seat, ...this.queue.filter((s) => s !== seat)];
   }
 
+  /** Drop a seat from the queue, e.g. one that was just benched. */
+  remove(seat: string): void {
+    this.queue = this.queue.filter((s) => s !== seat);
+  }
+
   shift(): string | undefined {
     return this.queue.shift();
   }

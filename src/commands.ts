@@ -8,6 +8,7 @@ import type { Room } from "./room.js";
 export const COMMAND_HELP = `  /seats                 seats, modes, and what is queued
   /parallel, /sequential room mode: all seats answer at once (no edits), or in turn
   /mode <seat> [id]      show or set a seat's session mode
+  /unbench <seat>        bring back a seat benched after failing (so does @seat)
   /perm <seat>           show a seat's policy
   /perm <seat> allow|ask|deny <pattern>   add a rule (kind like edit, or title glob like "Write *")
   /unperm <seat> <pattern>                remove a rule`;
@@ -26,9 +27,16 @@ export async function runCommand(room: Room, text: string, out: (line: string) =
       for (const name of room.seatNames) {
         const modes = room.modesOf(name);
         const mode = room.state.modes[name] ?? modes?.current ?? "-";
-        out(`  ${name.padEnd(8)} mode ${mode.padEnd(12)} session ${room.state.sessions[name] ?? "-"}`);
+        const benched = room.benched.has(name) ? "  (benched)" : "";
+        out(`  ${name.padEnd(8)} mode ${mode.padEnd(12)} session ${room.state.sessions[name] ?? "-"}${benched}`);
       }
       if (room.scheduler.pending.length) out(`  queued: ${room.scheduler.pending.join(", ")}`);
+      return;
+    }
+    case "/unbench": {
+      const [seat] = args;
+      if (!seat || !room.seatNames.includes(seat)) return out(`  usage: /unbench <seat>; benched: ${[...room.benched].join(", ") || "none"}`);
+      if (!room.unbench(seat)) out(`  ${seat} is not benched`);
       return;
     }
     case "/mode": {

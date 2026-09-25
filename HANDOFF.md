@@ -102,6 +102,22 @@ paragraphs, and a hand-off to the human all rendered. VS Code's ACP
 client is untried. The Zed settings shape in the README follows Zed's
 external-agents docs (`"type": "custom"`).
 
+## Feedback from the first live rooms (2026-09-25)
+
+From grok, in a room with a rate-limited claude:
+1. Skip a seat that keeps failing: done (benching, see README).
+2. Show the next seat what the last turn changed: commit notes now list
+   files; showing diffs to other seats is open, and belongs with phase 6.
+3. Scratch turns the room does not commit: open.
+4. Wake the seat that started a background job when it finishes: open.
+
+From Corina:
+- Seats must be able to build on each other's changes (debugging one file
+  together), so phase 6's worktrees need a way back to a shared tree, not
+  only isolation for parallel rounds.
+- Blank lines and colour between speakers: done.
+- Seeing that someone is typing, and a richer layout: phase 5 (TUI).
+
 ## Known warts
 
 - Fixed: a failed turn's streamed text was recorded as the seat's message

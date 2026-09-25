@@ -86,6 +86,20 @@ grok> Changed names[i + 1] to names[i].
   [room] grok committed 60c2ccf: 1 file changed, 1 insertion(+), 1 deletion(-)
 ```
 
+Each speaker gets its own block and colour; room lines and tool activity
+are dimmed. Colour is off when stdout is not a terminal or `NO_COLOR` is
+set. A commit note lists the files the turn changed.
+
+### When a seat fails
+
+A failed turn is the room's note (`[room] claude (claude-agent-acp) turn
+failed: ...`), never the seat's words, so the other seats read it from the
+room. A seat is **benched**, skipped in rounds and hand-offs, at once when
+its harness reports a rate limit, a usage limit, or a login, and after
+the same error twice otherwise. `@seat` or `/unbench seat` brings it back;
+`/seats` shows who is benched. Protocol oddities from a seat (a reply to a
+request the room never made, a non-JSON line) are shown once each, named.
+
 ### Who speaks next
 
 - **Sequential** (default): your message starts a round in roster order.

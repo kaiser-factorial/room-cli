@@ -53,6 +53,14 @@ export interface RoomState {
   policy: Policy;
 }
 
+/** Errors that retrying cannot fix before something outside the room changes. */
+const BENCH_NOW = /rate.?limit|session limit|usage limit|quota|auth(entication)? required|log ?in/i;
+
+/** `a.py, b.py` for a commit note; the first few files, then a count. */
+function fileList(files: string[], max = 5): string {
+  return files.length <= max ? files.join(", ") : `${files.slice(0, max).join(", ")} and ${files.length - max} more`;
+}
+
 /** Hand-offs allowed per human message before the room stops seats volleying. */
 export const MAX_HANDOFFS = 6;
 
@@ -81,6 +89,13 @@ export class Room {
   private stopped = false;
   private busy = false;
   private handoffs = 0;
+  /**
+   * Seats sitting out after failing in a way retrying will not fix: a rate
+   * limit or a login at once, anything else after the same error twice.
+   * Addressing one with `@name`, or `unbench`, brings it back.
+   */
+  readonly benched = new Set<string>();
+  private readonly lastFailure = new Map<string, { error: string; count: number }>();
   /** Seats whose turn is running now: one in sequential mode, several in a parallel batch. */
   private readonly active = new Set<string>();
   private cancelRequested = false;
@@ -236,7 +251,14 @@ export class Room {
     const { targets, text: body } = parseAddress(text, this.seatNames);
     this.transcript.append(this.opts.human, "message", body);
     this.handoffs = 0;
-    this.scheduler.fill(targets);
+    // Addressing a benched seat is asking for it back.
+    for (const t of targets) if (this.benched.has(t)) this.unbench(t);
+    const wanted = targets.length ? targets : this.activeSeats();
+    if (wanted.length === 0) {
+      this.opts.ui.status(`every seat is benched; @name one, or /unbench, to bring it back`);
+      return { cancelled: false };
+    }
+    this.scheduler.fill(wanted);
     return this.runRound();
   }
 
@@ -246,13 +268,25 @@ export class Room {
    */
   async continueRound(seats?: string[]): Promise<RoundResult> {
     if (this.busy) throw new Error("round in progress");
-    const wanted = seats && seats.length ? seats : this.seatNames.filter((s) => !this.passedWithNothingNew(s));
+    const wanted = seats && seats.length ? seats : this.activeSeats().filter((s) => !this.passedWithNothingNew(s));
     if (wanted.length === 0) {
       this.opts.ui.status("everyone passed and nothing is new; say something to continue");
       return { cancelled: false };
     }
     this.scheduler.fill(wanted);
     return this.runRound();
+  }
+
+  /** Seats not benched, in roster order. */
+  activeSeats(): string[] {
+    return this.seatNames.filter((s) => !this.benched.has(s));
+  }
+
+  unbench(seat: string): boolean {
+    if (!this.benched.delete(seat)) return false;
+    this.lastFailure.delete(seat);
+    this.opts.ui.status(`${seat} is back in the rotation`);
+    return true;
   }
 
   get roundRunning(): boolean {
@@ -324,6 +358,10 @@ export class Room {
     const human = this.opts.human.toLowerCase();
     if (mentions.some((m) => m.toLowerCase() === human)) ui.status(`${from} asked for ${this.opts.human}`);
     for (const m of mentions.filter((x) => x.toLowerCase() !== human).reverse()) {
+      if (this.benched.has(m)) {
+        ui.status(`${from} → ${m}, but ${m} is benched; @${m} to bring it back`);
+        continue;
+      }
       // Moving an already-queued seat forward is free; adding a turn counts.
       const extraTurn = !this.scheduler.pending.includes(m);
       if (extraTurn && this.handoffs >= MAX_HANDOFFS) {
@@ -429,14 +467,30 @@ export class Room {
     if (r.failure) {
       const failure = r.failure.replace(/\s+/g, " ").trim();
       this.opts.ui.status(`${this.label(name)} turn failed: ${failure}`);
+      this.noteFailure(name, failure);
       const partial = reply && !failure.includes(reply.replace(/\s+/g, " "))
         ? `\nWhat it wrote before failing:\n${neutralizeLabels(reply)}`
         : "";
       return this.transcript.append("room", "system", `${name}'s turn failed: ${failure}${partial}`);
     }
+    this.lastFailure.delete(name);
     return !reply || reply === PASS || r.stopReason === "cancelled"
       ? this.transcript.append(name, "pass", "")
       : this.transcript.append(name, "message", reply);
+  }
+
+  /** Bench a seat whose failures will not clear by themselves. */
+  private noteFailure(name: string, failure: string): void {
+    const prev = this.lastFailure.get(name);
+    const count = prev?.error === failure ? prev.count + 1 : 1;
+    this.lastFailure.set(name, { error: failure, count });
+    const now = BENCH_NOW.test(failure);
+    if (!now && count < 2) return;
+    this.benched.add(name);
+    const why = now ? "its harness says to wait or log in" : "it failed twice with the same error";
+    this.opts.ui.status(`${name} is benched: ${why}. @${name} or /unbench ${name} brings it back`);
+    this.transcript.append("room", "system", `${name} sits out until ${this.opts.human} brings it back.`);
+    this.scheduler.remove(name);
   }
 
   async runTurn(name: string): Promise<Entry | undefined> {
@@ -453,7 +507,7 @@ export class Room {
       try {
         const commit = await commitTurn(this.opts.cwd, name, `${name}: turn ${entry.id}\n\n${result.text.trim().slice(0, 400)}`);
         if (commit) {
-          const line = `${name} committed ${commit.sha}: ${commit.stat}`;
+          const line = `${name} committed ${commit.sha}: ${commit.stat} (${fileList(commit.files)})`;
           ui.status(line);
           this.transcript.append("room", "commit", line);
         }
@@ -477,7 +531,7 @@ export class Room {
     try {
       const commit = await commitTurn(this.opts.cwd, this.opts.human, `${this.opts.human}: ${why}`);
       if (commit) {
-        const line = `${this.opts.human} committed ${commit.sha}: ${commit.stat}`;
+        const line = `${this.opts.human} committed ${commit.sha}: ${commit.stat} (${fileList(commit.files)})`;
         this.opts.ui.status(line);
         this.transcript.append("room", "commit", line);
       }

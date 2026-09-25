@@ -59,6 +59,7 @@ const COMMANDS: acp.AvailableCommand[] = [
   { name: "mode", description: "Show or set a seat's session mode", input: { hint: "<seat> [mode]" } },
   { name: "perm", description: "Show a seat's room policy, or add a rule", input: { hint: "<seat> [allow|ask|deny <pattern>]" } },
   { name: "unperm", description: "Remove a room policy rule", input: { hint: "<seat> <pattern>" } },
+  { name: "unbench", description: "Bring back a seat benched after failing", input: { hint: "<seat>" } },
   { name: "help", description: "What you can type here" },
 ];
 

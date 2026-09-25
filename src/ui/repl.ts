@@ -95,29 +95,86 @@ export class LineSource {
   }
 }
 
+/** Seat name colours, assigned in order of first appearance. */
+const SEAT_COLOURS = [36, 35, 33, 32, 34, 91, 96, 95];
+
+/** ANSI styling, on only for a terminal and never with NO_COLOR set. */
+export function makeStyle(enabled: boolean) {
+  const wrap = (open: string, close: string) => (t: string) => (enabled ? `\u001b[${open}m${t}\u001b[${close}m` : t);
+  return {
+    enabled,
+    bold: wrap("1", "22"),
+    dim: wrap("2", "22"),
+    colour: (code: number) => wrap(`1;${code}`, "22;39"),
+  };
+}
+
 export class ReplUI implements RoomUI {
   private speaker?: string;
+  /** The seat whose output came last, text or tools: a different one starts a new block. */
+  private lastSeat?: string;
   private lineStart = true;
+  /** The last two characters written, to know whether a blank line is already there. */
+  private tail = "\n\n";
+  private readonly colours = new Map<string, (t: string) => string>();
+  readonly style: ReturnType<typeof makeStyle>;
 
-  constructor(private readonly lines: LineSource) {}
+  constructor(
+    private readonly lines: LineSource,
+    styled = Boolean((process.stdout as { isTTY?: boolean }).isTTY) && !process.env.NO_COLOR,
+  ) {
+    this.style = makeStyle(styled);
+  }
 
   /** Every write goes through the line source, so one landing over a prompt redraws it. */
   private readonly out = {
     write: (text: string): void => {
+      this.tail = (this.tail + text).slice(-2);
       if (this.lines.write(text)) {
         this.lineStart = true;
         this.speaker = undefined;
+        this.tail = "\n";
       }
     },
   };
 
+  /** A seat's name in its own colour. */
+  seatName(seat: string): string {
+    let c = this.colours.get(seat);
+    if (!c) {
+      c = this.style.colour(SEAT_COLOURS[this.colours.size % SEAT_COLOURS.length]);
+      this.colours.set(seat, c);
+    }
+    return c(seat);
+  }
+
+  /** The human just ended a line (the terminal echoed it, not us): the next block needs its gap. */
+  inputEnded(): void {
+    this.tail = "\n";
+    this.lineStart = true;
+    this.lastSeat = undefined;
+    this.speaker = undefined;
+  }
+
+  /** A blank line, unless there is one already: between speakers, and before the human's prompt. */
+  gap(): void {
+    this.newline();
+    if (this.tail !== "\n\n") this.out.write("\n");
+  }
+
   seatEvent(seat: string, ev: SeatEvent): void {
+    const { dim } = this.style;
+    const visible = ev.type === "text" || ev.type === "tool_call" || (ev.type === "tool_update" && (ev.content || ev.status === "failed"));
+    if (visible && this.lastSeat !== seat) {
+      this.gap();
+      this.lastSeat = seat;
+    }
     switch (ev.type) {
       case "text": {
         const text = sanitizeForTerminal(ev.text);
         if (this.speaker !== seat) {
-          this.newline();
-          this.out.write(`${seat}> `);
+          this.gap();
+          this.out.write(`${this.seatName(seat)}> `);
           this.speaker = seat;
           this.lineStart = false;
         }
@@ -128,7 +185,7 @@ export class ReplUI implements RoomUI {
       }
       case "tool_call":
         this.newline();
-        this.out.write(`  · ${seat}: ${sanitizeForTerminal(ev.title)}${ev.kind ? ` [${ev.kind}]` : ""}\n`);
+        this.out.write(dim(`  · ${seat}: ${sanitizeForTerminal(ev.title)}${ev.kind ? ` [${ev.kind}]` : ""}`) + "\n");
         this.writeContent(ev.content);
         this.lineStart = true;
         this.speaker = undefined;
@@ -137,13 +194,13 @@ export class ReplUI implements RoomUI {
         // Most harnesses send the diff or the output on the completing update.
         if (ev.content && ev.status !== "pending" && ev.status !== "in_progress") {
           this.newline();
-          if (ev.title) this.out.write(`  · ${seat}: ${sanitizeForTerminal(ev.title)}${ev.status === "failed" ? " (failed)" : ""}\n`);
+          if (ev.title) this.out.write(dim(`  · ${seat}: ${sanitizeForTerminal(ev.title)}${ev.status === "failed" ? " (failed)" : ""}`) + "\n");
           this.writeContent(ev.content);
           this.lineStart = true;
           this.speaker = undefined;
         } else if (ev.status === "failed") {
           this.newline();
-          this.out.write(`  · ${seat}: tool failed${ev.title ? `: ${sanitizeForTerminal(ev.title)}` : ""}\n`);
+          this.out.write(dim(`  · ${seat}: tool failed${ev.title ? `: ${sanitizeForTerminal(ev.title)}` : ""}`) + "\n");
           this.lineStart = true;
           this.speaker = undefined;
         }
@@ -158,16 +215,17 @@ export class ReplUI implements RoomUI {
   }
 
   private writeContent(content: ToolContentView[] | undefined): void {
-    for (const line of renderToolContent(content)) this.out.write(`${sanitizeForTerminal(line)}\n`);
+    for (const line of renderToolContent(content)) this.out.write(this.style.dim(sanitizeForTerminal(line)) + "\n");
   }
 
   async askHuman(req: PermissionRequestView): Promise<HumanChoice> {
-    this.newline();
+    this.gap();
     this.speaker = undefined;
-    this.out.write(`? ${req.seat} wants: ${sanitizeForTerminal(req.title)}${req.kind ? ` [${req.kind}]` : ""}\n`);
+    this.out.write(`${this.style.bold("?")} ${this.seatName(req.seat)} wants: ${sanitizeForTerminal(req.title)}${req.kind ? ` [${req.kind}]` : ""}\n`);
     this.writeContent(req.content);
     for (;;) {
       const a = (await this.lines.ask("  [a] allow  [A] always (room rule)  [d] deny  [c] cancel turn > "))?.trim();
+      this.inputEnded();
       if (a === null || a === undefined) return "deny"; // stdin closed
       if (a === "a" || a === "") return "allow";
       if (a === "A") return "allow_always";
@@ -178,7 +236,7 @@ export class ReplUI implements RoomUI {
 
   status(line: string): void {
     this.newline();
-    this.out.write(`  [room] ${sanitizeForTerminal(line)}\n`);
+    this.out.write(this.style.dim(`  [room] ${sanitizeForTerminal(line)}`) + "\n");
     this.lineStart = true;
     this.speaker = undefined;
   }
@@ -195,7 +253,9 @@ export async function runRepl(room: Room, lines: LineSource, ui: ReplUI): Promis
   const out = process.stdout;
   out.write(`room "${room.opts.name}" with ${room.seatNames.join(", ")}. /help for commands.\n`);
   for (;;) {
-    const line = await lines.ask(`${room.opts.human}> `);
+    ui.gap();
+    const line = await lines.ask(`${ui.style.bold(room.opts.human)}> `);
+    ui.inputEnded();
     if (line === null) break; // stdin closed
     const text = line.trim();
     if (text === "/quit" || text === "/q") break;
