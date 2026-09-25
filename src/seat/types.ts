@@ -23,6 +23,8 @@ export interface SeatConfig {
   cli?: string;
   /** Session mode to set at session start, when the agent advertises modes. Default: the one that asks. */
   mode?: string;
+  /** Terminal colour: a name (orange, light-blue, ...) or a 256-colour index. Default: the harness's. */
+  colour?: string;
   /** Room policy: tool kinds or title patterns. Deny beats ask beats allow. */
   allow?: string[];
   ask?: string[];

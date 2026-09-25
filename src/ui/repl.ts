@@ -11,6 +11,7 @@ import type { HumanChoice } from "../permissions.js";
 import { COMMAND_HELP, runCommand } from "../commands.js";
 import type { Room, RoomUI } from "../room.js";
 import type { PermissionRequestView, SeatEvent, ToolContentView } from "../seat/types.js";
+import { seatColour } from "./colours.js";
 import { renderToolContent } from "./render.js";
 
 const HELP = `commands:
@@ -107,6 +108,8 @@ export function makeStyle(enabled: boolean) {
     bold: wrap("1", "22"),
     dim: wrap("2", "22"),
     colour: (code: number) => wrap(`1;${code}`, "22;39"),
+    /** A 256-colour palette entry, bold. */
+    palette: (index: number) => wrap(`1;38;5;${index}`, "22;39"),
   };
 }
 
@@ -142,6 +145,13 @@ export class ReplUI implements RoomUI {
       }
     },
   };
+
+  /** Colours for seats with their own (by harness, or set in the roster). */
+  setSeatColours(colours: Record<string, number | undefined>): void {
+    for (const [seat, index] of Object.entries(colours)) {
+      if (index !== undefined) this.colours.set(seat, this.style.palette(index));
+    }
+  }
 
   /** A seat's name in its own colour. */
   seatName(seat: string): string {
@@ -287,7 +297,8 @@ export class ReplUI implements RoomUI {
 
 export async function runRepl(room: Room, lines: LineSource, ui: ReplUI): Promise<void> {
   const out = process.stdout;
-  out.write(`room "${room.opts.name}" with ${room.seatNames.join(", ")}. /help for commands.\n`);
+  ui.setSeatColours(Object.fromEntries(room.opts.seats.map((s) => [s.name, seatColour(s)])));
+  out.write(`room "${room.opts.name}" with ${room.opts.seats.map((s) => ui.seatName(s.name)).join(", ")}. /help for commands.\n`);
   for (;;) {
     ui.gap();
     const line = await lines.ask(`${ui.style.bold(room.opts.human)}> `);

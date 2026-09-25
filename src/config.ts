@@ -96,6 +96,7 @@ export function parseRoster(text: string, source: string): SeatConfig[] {
       promptFile: typeof s.promptFile === "string" ? s.promptFile : undefined,
       cli: typeof s.cli === "string" ? s.cli : undefined,
       mode: typeof s.mode === "string" ? s.mode : undefined,
+      colour: typeof s.colour === "string" || typeof s.colour === "number" ? String(s.colour) : undefined,
       allow: optStrArray(s.allow, `${source}: seats[${i}].allow`),
       ask: optStrArray(s.ask, `${source}: seats[${i}].ask`),
       deny: optStrArray(s.deny, `${source}: seats[${i}].deny`),

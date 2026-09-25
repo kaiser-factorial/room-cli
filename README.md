@@ -118,7 +118,10 @@ grok> Changed names[i + 1] to names[i].
   [room] grok committed 60c2ccf: 1 file changed, 1 insertion(+), 1 deletion(-)
 ```
 
-Each speaker gets its own block and colour; room lines, tool activity,
+Each speaker gets its own block and colour, by harness: grok white, claude
+orange, codex purple, agy green, pool light blue (so laguna too), hermes
+amber. `colour = "teal"` (or a 256-colour index) in a roster entry
+overrides it; room lines, tool activity,
 and seats' thinking are dimmed. Thinking streams as it comes, so a seat's
 loop (think, run, think, reply) is visible live; `/thoughts off` folds each
 run of it to one line. Colour is off when stdout is not a terminal or `NO_COLOR` is
