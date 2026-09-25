@@ -12,7 +12,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { runDoctor } from "../src/doctor.js";
 import { EXIT } from "../src/exit-codes.js";
 import { Room, type RoomUI } from "../src/room.js";
-import { AcpSeat } from "../src/seat/acp.js";
+import { AcpSeat, Chan } from "../src/seat/acp.js";
 import type { PermissionRequestView, SeatEvent } from "../src/seat/types.js";
 import { fakeAcpSeat, fakeCliSeat } from "./fixtures/index.js";
 
@@ -94,6 +94,16 @@ describe("AcpSeat against the fake agent", () => {
     await seat.stop();
   }, 20_000);
 
+  it("keeps the first chunk of every later turn (a leaked waiter once ate it: [pass] became pass])", async () => {
+    const seat = new AcpSeat(fakeAcpSeat("f"), async () => "cancel");
+    await seat.start();
+    await seat.newSession(tmp("cwd"));
+    expect((await collect(seat, ">> say first turn")).text).toBe("first turn");
+    expect((await collect(seat, ">> pass")).text).toBe("[pass]");
+    expect((await collect(seat, ">> say third turn")).text).toBe("third turn");
+    await seat.stop();
+  }, 20_000);
+
   it("cancels a slow turn", async () => {
     const seat = new AcpSeat(fakeAcpSeat("f"), async () => "cancel");
     await seat.start();
@@ -132,6 +142,18 @@ describe("AcpSeat against the fake agent", () => {
       await cannot.stop();
     }
   }, 60_000);
+});
+
+describe("Chan", () => {
+  it("withdraws a waiter when the race is lost, so the next item is not swallowed", async () => {
+    const c = new Chan<number>();
+    expect(await c.nextOr(Promise.resolve())).toBeUndefined();
+    c.push(1);
+    expect(await c.nextOr(new Promise(() => undefined))).toBe(1);
+    const waiting = c.nextOr(new Promise(() => undefined));
+    c.push(2);
+    expect(await waiting).toBe(2);
+  });
 });
 
 describe("doctor against fake harnesses", () => {

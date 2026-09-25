@@ -9,15 +9,18 @@ context window; the room holds only the transcript and the session ids. When
 a seat wants to do something gated, its `session/request_permission` is
 forwarded to you. Nothing is auto-approved unless a seat's own config says so.
 
-Design doc: *Joint Session CLI Design* (Claude Docs). Phases 0 to 3 are
+Design doc: *Joint Session CLI Design* (Claude Docs). Phases 0 to 4 are
 done: the doctor, a room with a streaming REPL, the CLI fallback adapter,
-and seats that address each other, pass, and answer in parallel.
+seats that address each other, pass, and answer in parallel, and the room
+served to an editor as an ACP agent, with resume.
 
 ## Commands
 
 ```bash
 npm run dev -- start claude grok hermes        # open a room; nothing joins by default
 npm run dev -- start --room-file rooms/review.toml
+npm run dev -- resume main            # reopen a saved room with the seats it had
+npm run dev -- acp claude grok        # serve the room to an editor over ACP on stdio
 npm run dev -- roster                 # the effective roster and where it came from
 npm run dev -- doctor                 # handshake every seat, print a table
 npm run dev -- doctor --deep          # also prove the permission round trip
@@ -134,6 +137,53 @@ Use it when a seat's ACP route breaks, or for a harness with no ACP route.
 The recipe is picked from `cli = "..."` or the command's basename. `args`
 in the roster are appended to the recipe's.
 
+### In an editor (`room acp`)
+
+`room acp <seats...>` is an ACP agent on stdio, so an editor that speaks ACP
+hosts the room: Zed, or VS Code with an ACP client extension. The editor is
+the client and the room is its agent; the seats are the room's agents in
+turn. Each editor thread is its own room, named `acp-<time>-<id>`, with
+state in `.room/<that name>/` and, in a repo, its own `room/<that name>`
+branch. What changes from the REPL:
+
+- Seats answer inside one agent message, a paragraph each, as `**seat>**`.
+  Room status lines are paragraphs starting `[room]`.
+- Tool calls show as the editor's own tool cards, titled `seat: ...`.
+- A permission the room policy leaves to you is the editor's permission
+  prompt: *Allow*, *Always allow <kind> for <seat> (room rule)*, *Deny*.
+- The room's sequential and parallel modes are the session's modes, so
+  the editor's mode picker switches them. `/parallel` and `/sequential`
+  work too, as do `/next`, `/seats`, `/mode`, `/perm`, `/unperm`, `/help`.
+- The editor's stop button cancels the round: the running seats are
+  cancelled (recorded as passes) and the rest of the round is dropped.
+- Reopening a thread (`session/load` replays the history, `session/resume`
+  does not) reopens the room and reattaches every seat to its session.
+- MCP servers the editor offers are ignored: seats bring their own.
+
+Zed, in `settings.json` (not yet tried against Zed itself; the protocol
+side is tested with a real client over stdio):
+
+```json
+"agent_servers": {
+  "room": {
+    "command": "npx",
+    "args": ["tsx", "/path/to/joint-session/packages/room/bin/room.ts", "acp", "claude", "grok"]
+  }
+}
+```
+
+The roster is looked up from the directory the editor starts the agent in;
+pass `--roster <file>` before `acp` to pin it.
+
+### Resuming
+
+`room resume <name>` reopens `.room/<name>/` with the seats it last had
+(or the ones you name), and refuses when there is no saved room. Each seat
+reattaches to its session: `session/resume` when the harness advertises
+it, else `session/load` with the replay drained, and a CLI seat keeps its
+id. A seat that cannot reattach gets a fresh session and catches up from
+the whole transcript.
+
 ### Room file
 
 ```toml
@@ -193,13 +243,14 @@ AGY_BIN = "/opt/homebrew/bin/agy"
 
 ## Tests without harnesses
 
-`npm test` runs 53 tests with no harness or login. Eight of them spawn
+`npm test` runs 63 tests with no harness or login. Fifteen of them spawn
 `test/fixtures/fake-agent.ts`, a real ACP agent with switches for each
 harness quirk (`--modes`, `--auto-edit`, `--no-ids`, `--resume`, `--load`,
 `--start-delay`, `--fail-session`), and `test/fixtures/fake-claude`, a CLI
 harness in Claude Code's headless shape. They cover the permission round
 trip, diffs, cancel, resume across a restart, the doctor's verdicts, and
-the room end to end. Details in HANDOFF.md.
+the room end to end. `test/acp-server.test.ts` spawns `room acp` with fake
+seats and drives it as an editor would. Details in HANDOFF.md.
 
 ## What phase 0 found
 

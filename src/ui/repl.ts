@@ -8,6 +8,7 @@
  */
 import type readline from "node:readline";
 import type { HumanChoice } from "../permissions.js";
+import { COMMAND_HELP, runCommand } from "../commands.js";
 import type { Room, RoomUI } from "../room.js";
 import type { PermissionRequestView, SeatEvent, ToolContentView } from "../seat/types.js";
 import { renderToolContent } from "./render.js";
@@ -16,12 +17,7 @@ const HELP = `commands:
   <text>                 say something; every seat answers in order
   @seat <text>           say something to one seat (several: @a @b)
   <empty line> or /next  another round with no new message
-  /seats                 seats, modes, and what is queued
-  /parallel, /sequential room mode: all seats answer at once (no edits), or in turn
-  /mode <seat> [id]      show or set a seat's session mode
-  /perm <seat>           show a seat's policy
-  /perm <seat> allow|ask|deny <pattern>   add a rule (kind like edit, or title glob like "Write *")
-  /unperm <seat> <pattern>                remove a rule
+${COMMAND_HELP}
   /quit`;
 
 /**
@@ -178,75 +174,11 @@ export async function runRepl(room: Room, lines: LineSource, ui: ReplUI): Promis
       continue;
     }
     if (text.startsWith("/")) {
-      await command(room, text);
+      await runCommand(room, text, (l) => out.write(l + "\n"));
       continue;
     }
     await room.say(text);
   }
   ui.status("closing seats");
   await room.stop();
-}
-
-async function command(room: Room, text: string): Promise<void> {
-  const [cmd, ...args] = text.split(/\s+/);
-  const out = (s: string): void => {
-    process.stdout.write(s + "\n");
-  };
-  switch (cmd) {
-    case "/parallel":
-    case "/sequential": {
-      room.setRoomMode(cmd === "/parallel" ? "parallel" : "sequential");
-      out(`  room mode: ${room.mode}${room.mode === "parallel" ? " (file changes refused during rounds)" : ""}`);
-      return;
-    }
-    case "/seats": {
-      out(`  room mode: ${room.mode}`);
-      for (const name of room.seatNames) {
-        const modes = room.modesOf(name);
-        const mode = room.state.modes[name] ?? modes?.current ?? "-";
-        out(`  ${name.padEnd(8)} mode ${mode.padEnd(12)} session ${room.state.sessions[name] ?? "-"}`);
-      }
-      if (room.scheduler.pending.length) out(`  queued: ${room.scheduler.pending.join(", ")}`);
-      return;
-    }
-    case "/mode": {
-      const [seat, id] = args;
-      if (!seat || !room.seatNames.includes(seat)) return out(`  usage: /mode <seat> [id]; seats: ${room.seatNames.join(", ")}`);
-      const modes = room.modesOf(seat);
-      if (!id) {
-        if (!modes) return out(`  ${seat} advertises no modes (its config file is the lever)`);
-        for (const m of modes.available) out(`  ${m.id === (room.state.modes[seat] ?? modes.current) ? "*" : " "} ${m.id.padEnd(20)} ${m.name}`);
-        return;
-      }
-      try {
-        await room.setMode(seat, id);
-        out(`  ${seat}: mode ${id}`);
-      } catch (err) {
-        out(`  ${(err as Error).message}`);
-      }
-      return;
-    }
-    case "/perm": {
-      const [seat, action, ...rest] = args;
-      if (!seat || !room.seatNames.includes(seat)) return out(`  usage: /perm <seat> [allow|ask|deny <pattern>]`);
-      if (action) {
-        if ((action !== "allow" && action !== "ask" && action !== "deny") || rest.length === 0) {
-          return out(`  usage: /perm <seat> allow|ask|deny <pattern>`);
-        }
-        room.addRule(seat, action, rest.join(" "));
-      }
-      const p = room.policyOf(seat);
-      out(`  ${seat}: allow ${JSON.stringify(p.allow)}  ask ${JSON.stringify(p.ask)}  deny ${JSON.stringify(p.deny)}`);
-      out(`  (deny beats ask beats allow; unmatched calls ask you)`);
-      return;
-    }
-    case "/unperm": {
-      const [seat, ...rest] = args;
-      if (!seat || rest.length === 0) return out(`  usage: /unperm <seat> <pattern>`);
-      out(room.removeRule(seat, rest.join(" ")) ? `  removed` : `  no such rule`);
-      return;
-    }
-    default:
-      out(`  unknown command ${cmd}; /help`);
-  }
 }

@@ -1,6 +1,6 @@
 # room: handoff
 
-_Last updated 2026-09-25. Branch `feat/cli-room`, based on `feat/cli`._
+_Last updated 2026-09-25 (phase 4). Branch `feat/cli-room`, based on `feat/cli`._
 
 Design doc (six phases, findings per phase): Claude Docs "Joint Session CLI
 Design", https://claude.ai/code/artifact/8624261e-8ed2-45ea-ad01-d8b06166e1e1
@@ -14,18 +14,23 @@ Design", https://claude.ai/code/artifact/8624261e-8ed2-45ea-ad01-d8b06166e1e1
 | 2 CLI fallback adapter, personas, laguna seat | done (codex recipe untested live: usage limit until Sep 30) |
 | adversarial pass | done (seats are untrusted; see README) |
 | 3 hand-offs, passing, parallel mode | done |
-| tool visibility (diffs, command output in the REPL) | done, committed with this note |
-| 4 room as an ACP agent + resume | **next**; resume half done (see below) |
+| tool visibility (diffs, command output in the REPL) | done |
+| 4 room as an ACP agent + resume | done; not yet tried in Zed itself (see below) |
 | 5 Ink TUI | optional |
 | 6 parallel edits with worktrees | later |
 
-Tests: `npm test` in `packages/room`, 53 tests, run anywhere with Node.
-45 use in-process fake seats. 8 (`test/fake-harness.test.ts`) spawn real
-subprocesses that speak the real protocol, which covers what the live
-checks on the owner's Mac cover: handshake, modes, the permission round
-trip with diffs, command output, cancel, resume via `session/resume` and
-`session/load`, the doctor's verdicts, and the room end to end with a
-commit authored by a seat and a restart that reattaches every seat.
+Tests: `npm test` in `packages/room`, 63 tests, run anywhere with Node.
+Run `npm install` from the repo root first: vitest picks up the root
+`vite.config.ts`, which needs the root's dependencies.
+`test/fake-harness.test.ts` spawns real subprocesses that speak the real
+protocol, which covers what the live checks on the owner's Mac cover:
+handshake, modes, the permission round trip with diffs, command output,
+cancel, resume via `session/resume` and `session/load`, the doctor's
+verdicts, and the room end to end with a commit authored by a seat and a
+restart that reattaches every seat. `test/acp-server.test.ts` spawns
+`room acp` with fake seats and drives it as an editor: streaming,
+permissions forwarded to the editor, cancel, session modes, load and
+resume in a new process, a seat failing to start.
 
 ## Emulating the harnesses in the cloud
 
@@ -59,34 +64,46 @@ Real harnesses in the cloud: the two Zed adapters install from npm and the
 Claude one runs on `ANTHROPIC_API_KEY` if present. grok, hermes, pool, agy:
 Mac only.
 
-Phase 4's ACP server can be tested here by spawning `room acp` with a
-roster of fake agents and driving it with `AcpSeat`, the same way
-`fake-harness.test.ts` drives seats.
+Phase 4's ACP server is tested that way: `acp-server.test.ts` spawns
+`room acp` with a roster of fake agents and drives it with a plain ACP
+client. For a live check with the Claude seat, pin it to Sonnet to spare
+the API key (`args = ["--model", ...]` or the adapter's env).
 
-## Phase 4 plan
+## Phase 4: what was built
 
-1. `src/server/acp.ts`, command `room acp [seats...] [--room-file f]`.
-   `acp.agent({name:"room"})` over `ndJsonStream(process.stdout, process.stdin)`.
-   All logging to stderr; stdout is the wire.
-   - `initialize` → `{protocolVersion, agentInfo:{name:"room"}, agentCapabilities:{loadSession:false}, authMethods:[]}`
-   - `session/new` → `Room.open({cwd: params.cwd, seats, ui: AcpServerUI})`, `start()`, return `sessionId`.
-   - `session/prompt` → join text blocks; `/parallel` `/sequential` handled; else `room.say(text)`; return `{stopReason:"end_turn"}`.
-   - `session/cancel` → cancel the active seat (Room needs `cancelActive()`; track the seat whose turn is running).
-   - `AcpServerUI`: `seatEvent` text → `session/update` `agent_message_chunk` with a `seat> ` prefix at the first chunk of each turn; `tool_call`/`tool_update` forwarded with `toolCallId` namespaced `${seat}:${id}`; `status` → a chunk `\n[room] ...\n`; `askHuman` → `session/request_permission` to the client with options `allow_once`, `allow_always`, `reject_once`, mapped back to `HumanChoice`.
-2. Resume: `Room.start` already reattaches seats via `Seat.resumeSession`
-   (ACP: `session/resume` if advertised, else `session/load` with the
-   replay drained; CLI: keeps the id). Seats that cannot get a fresh
-   session and a full transcript replay (cursor cleared). Untested live.
-   Add `room resume <name>` as an alias of `start` that refuses to open a
-   room whose state dir does not exist.
-3. Register in Zed (`agent_servers` in settings) and VS Code's ACP Client
-   extension: command `npx tsx /path/to/packages/room/bin/room.ts acp claude grok`.
+- `src/server/acp.ts`, `room acp [seats...]`. Each editor session is a
+  room named `acp-<time>-<id>`; that name is the ACP session id, so
+  `session/load` (history replayed as user and agent chunks) and
+  `session/resume` reopen `.room/<name>/` and reattach seats. Advertises
+  `loadSession`, `sessionCapabilities.resume` and `close`.
+- Seat text streams into one agent message, a paragraph per speaker
+  (`**seat>** `); status lines are `[room] ...` paragraphs. Tool calls are
+  forwarded with ids `${seat}:${turn}:${id}`, since harnesses reuse ids
+  across turns. Permission requests go to the editor with allow, always
+  (a room rule), deny; a cancelled answer cancels the turn.
+- Status lines from `session/new` are held until just after the response,
+  since the editor drops updates for a session id it does not know yet.
+- Room modes (sequential, parallel) are the session's modes; `/parallel`
+  and `/sequential` send `current_mode_update`. Slash commands are shared
+  with the REPL (`src/commands.ts`) and advertised via
+  `available_commands_update`.
+- `Room.cancel()` cancels every running seat, drops the queue, and skips
+  hand-offs; `say` and `continueRound` report `{ cancelled }`.
+- `room resume <name> [seats...]`: refuses without `.room/<name>/state.json`;
+  with no seats named, reopens the lineup saved in `state.seats`.
+
+Still to do for phase 4: register it in Zed (`agent_servers`, see README)
+and VS Code's ACP client, and watch it with real seats. The Zed settings
+shape in the README is from memory; check it against Zed's docs.
 
 ## Known warts
 
-- In the REPL, a seat's `[pass]` reply once printed as `pass]` (hermes,
-  2026-09-25). Not reproduced in isolation; check `sanitizeForTerminal`
-  and the readline redraw. Cosmetic.
+- Fixed: a seat's `[pass]` printed as `pass]` (hermes, 2026-09-25). Not
+  cosmetic: `AcpSeat.prompt` raced `updates.next()` against the turn's end
+  and left the losing waiter queued, so it swallowed the first update of
+  the seat's next turn. With `[` gone, the reply was recorded as a message
+  instead of a pass. `Chan.nextOr` withdraws the waiter; regression tests
+  in `fake-harness.test.ts`.
 - grok sends no `messageId`; a tool call between text runs now forces a
   paragraph break. Verified once.
 - Codex recipe (`seat/cli-recipes.ts`) is unit-tested against sample

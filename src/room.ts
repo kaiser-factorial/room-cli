@@ -45,6 +45,8 @@ export interface RoomState {
   started: string;
   branch?: string;
   mode: RoomMode;
+  /** The lineup, in roster order, as last opened. `room resume` reopens it. */
+  seats?: string[];
   cursors: Record<string, number>;
   sessions: Record<string, string>;
   modes: Record<string, string>;
@@ -56,6 +58,11 @@ export const MAX_HANDOFFS = 6;
 
 /** Tool kinds refused during a parallel round: every seat is writing at once. */
 const MUTATING_KINDS = new Set(["edit", "delete", "move", "execute"]);
+
+/** How a round ended. `cancelled` when `cancel()` stopped it. */
+export interface RoundResult {
+  cancelled: boolean;
+}
 
 interface TurnResult {
   text: string;
@@ -74,6 +81,9 @@ export class Room {
   private stopped = false;
   private busy = false;
   private handoffs = 0;
+  /** Seats whose turn is running now: one in sequential mode, several in a parallel batch. */
+  private readonly active = new Set<string>();
+  private cancelRequested = false;
 
   private constructor(readonly opts: RoomOptions) {
     for (const s of opts.seats) {
@@ -108,6 +118,19 @@ export class Room {
       for (const r of s.ask ?? []) if (!p.ask.includes(r)) p.ask.push(r);
       for (const r of s.deny ?? []) if (!p.deny.includes(r)) p.deny.push(r);
     }
+  }
+
+  /** Whether a room with this name has saved state, i.e. can be resumed. */
+  static exists(cwd: string, name: string, stateDir?: string): boolean {
+    return existsSync(join(stateDir ?? join(cwd, ".room", name), "state.json"));
+  }
+
+  /** The seats a saved room last had, in order; older state files only know their sessions. */
+  static savedSeats(cwd: string, name: string, stateDir?: string): string[] {
+    const path = join(stateDir ?? join(cwd, ".room", name), "state.json");
+    if (!existsSync(path)) return [];
+    const state = JSON.parse(readFileSync(path, "utf8")) as RoomState;
+    return state.seats ?? Object.keys(state.sessions ?? {});
   }
 
   static async open(opts: RoomOptions): Promise<Room> {
@@ -153,6 +176,7 @@ export class Room {
       this.seats.clear();
       throw err;
     }
+    this.state.seats = this.seatNames;
     this.saveState();
     if (this.transcript.entries.length === 0) {
       this.transcript.append(
@@ -199,28 +223,43 @@ export class Room {
   }
 
   /** The human speaks. A leading `@seat` routes the round to those seats only. */
-  async say(text: string): Promise<void> {
+  async say(text: string): Promise<RoundResult> {
     if (this.busy) throw new Error("round in progress");
     const { targets, text: body } = parseAddress(text, this.seatNames);
     this.transcript.append(this.opts.human, "message", body);
     this.handoffs = 0;
     this.scheduler.fill(targets);
-    await this.runRound();
+    return this.runRound();
   }
 
   /**
    * Another round with no new human message. Without explicit seats, a seat
    * whose last turn was a pass and who has seen nothing new since is skipped.
    */
-  async continueRound(seats?: string[]): Promise<void> {
+  async continueRound(seats?: string[]): Promise<RoundResult> {
     if (this.busy) throw new Error("round in progress");
     const wanted = seats && seats.length ? seats : this.seatNames.filter((s) => !this.passedWithNothingNew(s));
     if (wanted.length === 0) {
       this.opts.ui.status("everyone passed and nothing is new; say something to continue");
-      return;
+      return { cancelled: false };
     }
     this.scheduler.fill(wanted);
-    await this.runRound();
+    return this.runRound();
+  }
+
+  get roundRunning(): boolean {
+    return this.busy;
+  }
+
+  /**
+   * Stop the running round: drop the queue and cancel every seat mid-turn.
+   * Each cancelled turn is recorded as a pass, and no hand-off follows it.
+   */
+  async cancel(): Promise<void> {
+    if (!this.busy) return;
+    this.cancelRequested = true;
+    this.scheduler.clear();
+    await Promise.all([...this.active].map((n) => this.seats.get(n)?.cancel().catch(() => undefined)));
   }
 
   private passedWithNothingNew(seat: string): boolean {
@@ -235,11 +274,12 @@ export class Room {
     return false;
   }
 
-  private async runRound(): Promise<void> {
+  private async runRound(): Promise<RoundResult> {
     if (this.busy) throw new Error("round in progress");
     this.busy = true;
+    this.cancelRequested = false;
     try {
-      while (!this.stopped && this.scheduler.pending.length) {
+      while (!this.stopped && !this.cancelRequested && this.scheduler.pending.length) {
         if (this.state.mode === "parallel") {
           await this.runParallelBatch();
         } else {
@@ -247,11 +287,17 @@ export class Room {
           // Anything the human changed between turns is theirs, not the next seat's.
           if (this.useGit) await this.commitHumanChanges(`changes before ${seat}'s turn`);
           const entry = await this.runTurn(seat);
-          if (entry?.kind === "message") this.handOff(seat, entry.text);
+          if (entry?.kind === "message" && !this.cancelRequested) this.handOff(seat, entry.text);
         }
       }
+      if (this.cancelRequested) {
+        this.scheduler.clear();
+        this.opts.ui.status("round cancelled");
+      }
+      return { cancelled: this.cancelRequested };
     } finally {
       this.busy = false;
+      this.cancelRequested = false;
     }
   }
 
@@ -311,6 +357,7 @@ export class Room {
     // Next round each seat gets the whole batch; its own entry is skipped when rendering.
     for (const r of replies) this.state.cursors[r.seat] = snapshotLast;
     this.saveState();
+    if (this.cancelRequested) return;
     for (const r of replies) if (r.entry.kind === "message") this.handOff(r.seat, r.entry.text);
   }
 
@@ -338,6 +385,7 @@ export class Room {
     const seat = this.seats.get(name);
     if (!seat) throw new Error(`no such seat: ${name}`);
     const result: TurnResult = { text: "", stopReason: "end_turn" };
+    this.active.add(name);
     try {
       await withTimeout(
         (async () => {
@@ -353,6 +401,8 @@ export class Room {
     } catch (err) {
       await seat.cancel();
       result.failure = describeError(err);
+    } finally {
+      this.active.delete(name);
     }
     return result;
   }

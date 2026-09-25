@@ -26,7 +26,7 @@ import { childEnv } from "../env.js";
 const STDERR_TAIL_BYTES = 16384;
 
 /** An unbounded async queue. */
-class Chan<T> {
+export class Chan<T> {
   private items: T[] = [];
   private waiters: Array<(v: T) => void> = [];
   push(v: T): void {
@@ -34,9 +34,25 @@ class Chan<T> {
     if (w) w(v);
     else this.items.push(v);
   }
-  next(): Promise<T> {
+  /**
+   * The next item, or undefined once `until` settles first. The waiter is
+   * withdrawn then: a waiter left behind would swallow the next item pushed,
+   * which is how a seat's next turn lost its first chunk (`[pass]` → `pass]`).
+   */
+  nextOr(until: Promise<unknown>): Promise<T | undefined> {
     if (this.items.length) return Promise.resolve(this.items.shift()!);
-    return new Promise((r) => this.waiters.push(r));
+    return new Promise((resolve) => {
+      const w = (v: T) => resolve(v);
+      this.waiters.push(w);
+      const withdraw = () => {
+        const i = this.waiters.indexOf(w);
+        if (i >= 0) {
+          this.waiters.splice(i, 1);
+          resolve(undefined);
+        }
+      };
+      until.then(withdraw, withdraw);
+    });
   }
   tryNext(): T | undefined {
     return this.items.shift();
@@ -275,7 +291,7 @@ export class AcpSeat implements Seat {
     }.bind(this);
 
     for (;;) {
-      const n = await Promise.race([this.updates.next(), done.then(() => null)]);
+      const n = await this.updates.nextOr(done);
       if (n) {
         yield* map(n.update);
         continue;
