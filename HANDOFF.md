@@ -115,5 +115,8 @@ shape in the README is from memory; check it against Zed's docs.
   `permission_mode = "default"` plus a `[permission] ask` table. Without
   both, grok auto-approves under ACP and drops writes silently under `-p`.
 - `~/Projects/AGENT_JOURNAL/laguna/pool-laguna.sh` paths fixed (backup beside it).
+- `antigravity-acp` (the agy seat's adapter) is an optional dependency: its
+  postinstall needs bun, so an install without bun (CI) skips it rather
+  than failing. The Mac has bun, so it installs there as before.
 - Every agent has a persona at `~/Projects/AGENT_JOURNAL/<agent>/SOUL.md`;
   seats take one via `promptFile`.

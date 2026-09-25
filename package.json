@@ -21,8 +21,10 @@
   "devDependencies": {
     "@agentclientprotocol/claude-agent-acp": "^0.81.2",
     "@agentclientprotocol/codex-acp": "^1.13.1",
-    "antigravity-acp": "^1.1.0",
     "tsx": "^4.20.0",
     "vitest": "^3.2.0"
+  },
+  "optionalDependencies": {
+    "antigravity-acp": "^1.1.0"
   }
 }
