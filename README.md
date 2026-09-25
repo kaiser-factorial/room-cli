@@ -93,13 +93,12 @@ working directory, and gives every seat a **desk**: a git worktree at
   own messages. Its commits carry its name (the room sets `GIT_AUTHOR_NAME`
   for it), not yours.
 - Before each of its turns the room merges the trunk into its desk, so it
-  builds on everyone's work. After the turn it commits whatever the seat
-  left uncommitted, as the seat, and merges the desk into the trunk. Your
-  own edits in the trunk are committed as you first.
-- Not ready to share? A seat ending its reply with `[hold]` keeps the
-  turn's work on its desk, uncommitted and unmerged, until a turn it ends
-  without it. `/land <seat>` lands held work yourself; `/seats` shows who
-  is holding.
+  builds on everyone's landed work. After the turn it commits whatever the
+  seat left uncommitted, as the seat, on its desk.
+- Nothing reaches the trunk until the seat says so: a reply ending `[land]`
+  merges its branch into the trunk. `/land <seat>` does it for a seat;
+  `/seats` shows how many commits each desk has not landed. Your own edits
+  in the trunk are committed as you before a merge.
 - A merge that conflicts is aborted, the work stays on the desk, and the
   seat is told on its next turn to merge the trunk and resolve it.
 - **Background work.** `/bg grok build the parser`, or a seat ending its
@@ -110,7 +109,7 @@ working directory, and gives every seat a **desk**: a git worktree at
   never splits the active reply, and its permission questions come to you
   one at a time, over your prompt, which comes back afterwards with what
   you had typed. When it finishes its reply is posted and its work lands.
-  `/stop grok` cancels; what it did stays held on its desk for `/land`.
+  `/stop grok` cancels; what it did stays on its desk for `/land`.
   Background turns may run an hour.
 - `--no-desks` goes back to one shared directory, where the room commits
   after each turn and seats are told not to touch git.
@@ -170,6 +169,12 @@ request the room never made, a non-JSON line) are shown once each, named.
   writing one directory. Hand-offs from a parallel batch run afterwards.
 
 ### Permissions, two levers
+
+**Auto mode** (`/auto on`, or `--auto` at start): a tool call that no rule
+matches runs without asking you. Deny rules still block and ask rules
+still ask, so `/perm grok deny "Bash rm *"` and `/perm grok ask "Write *.env"`
+are how you fence it. Auto approvals print nothing extra: the tool call
+itself is already on screen. The setting is saved with the room.
 
 **Room policy** works for every seat, because it sits in the orchestrator.
 Rules match a tool call's kind (`read`, `edit`, `execute`, ...) or its title

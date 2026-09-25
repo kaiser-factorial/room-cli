@@ -168,12 +168,11 @@ describe("background turns", () => {
     await room.stop();
   });
 
-  it("/stop cancels it and keeps the half-done work on the desk, held", async () => {
+  it("/stop cancels it and keeps the half-done work on the desk, unlanded", async () => {
     const { room, lines } = await openRoom({ a: [async (_p, cancelled) => (await cancelled, "")], b: [] });
     room.startBackground("a", "endless");
     expect(await room.stopBackground("a")).toBe(true);
-    expect([...room.holding]).toEqual(["a"]);
-    expect(lines.some((l) => /^a's background work was stopped; what it did stays on its desk/.test(l))).toBe(true);
+    expect(lines.some((l) => /^a's background work was stopped; what it did is on its desk \(\/land a/.test(l))).toBe(true);
     expect(room.background.size).toBe(0);
     await room.stop();
   });

@@ -23,8 +23,8 @@ export function personaText(seat: SeatConfig): string | undefined {
 export const PASS = "[pass]";
 /** A reply's first or last line `[background] <task>`: the seat keeps working while the room goes on. */
 export const BACKGROUND = "[background]";
-/** A seat ending its reply with this keeps the turn's work on its desk, unlanded. */
-export const HOLD = "[hold]";
+/** A reply's first or last line `[land]`: the seat's branch is ready, merge it into the trunk. */
+export const LAND = "[land]";
 
 export interface PreambleOptions {
   seat: SeatConfig;
@@ -59,7 +59,7 @@ export function buildPreamble(o: PreambleOptions): string {
     ? `Your permission prompts reach ${o.human}. Answers can take a while, so batch small tool calls into one turn rather than asking many times.`
     : `Your permission prompts do not reach anyone. You run in a sandbox, and actions outside the workspace will fail.`;
   const git = o.desk && o.branch
-    ? `You work in your own desk: a git worktree at ${o.desk.path}, on branch ${o.desk.branch}. It is yours: edit, run, and commit there freely, with messages that say why. Stay in it: do not check out other branches, push, or touch other worktrees. The shared trunk is ${o.branch}, in ${o.human}'s working directory. Before each of your turns the room merges the trunk into your branch, so you build on everyone's work; when your turn ends it commits whatever you left uncommitted, as you, and merges your branch into the trunk. If a merge conflicts, the room tells you, and resolving it is yours. Not ready to share yet? End your reply with \`${HOLD}\` on its own line: the room leaves this turn's work on your desk, uncommitted and unmerged, until a turn you end without it. Something that takes a while (a build, a long refactor, a test run to watch)? End your reply with \`${BACKGROUND} <what you will do>\` on its own line: you keep working in your desk while the conversation goes on without you, ${o.human} watches your progress, and your reply is posted when you finish.`
+    ? `You work in your own desk: a git worktree at ${o.desk.path}, on branch ${o.desk.branch}. It is yours: edit, run, and commit there freely, with messages that say why. Stay in it: do not check out other branches, push, or touch other worktrees. The shared trunk is ${o.branch}, in ${o.human}'s working directory. Before each of your turns the room merges the trunk into your branch, so you build on everyone's work; when your turn ends it commits whatever you left uncommitted, as you. Your branch reaches the trunk only when you say so: end a reply with \`${LAND}\` on its own line when your work is ready for the others, and the room merges it (${o.human} can also land it). If a merge conflicts, the room tells you, and resolving it is yours. Something that takes a while (a build, a long refactor, a test run to watch)? End your reply with \`${BACKGROUND} <what you will do>\` on its own line: you keep working in your desk while the conversation goes on without you, ${o.human} watches your progress, and your reply is posted when you finish.`
     : o.branch
     ? `One shared working directory on branch ${o.branch}. The room commits after every turn that changes files, with you as author, so other seats see your edits through git and can build on them. Do not commit, branch, stash, or create worktrees yourself.`
     : `One shared working directory. Other seats see your file changes directly.`;

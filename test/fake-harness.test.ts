@@ -270,7 +270,7 @@ describe("Room against fake harnesses", () => {
     expect(room.transcript.entries.filter((e) => e.kind === "message").map((e) => e.from)).toEqual(["Corina", "a", "b"]);
     expect(u.lines).toContain("a → b");
 
-    await room.say("@b >> edit calc.py return a + b");
+    await room.say("@b >> edit calc.py return a + b\n>> land");
     expect(u.asked).toEqual(["b: Edit calc.py"]);
     expect(readFileSync(join(cwd, "calc.py"), "utf8")).toBe("return a + b\n");
     expect(git("log", "-1", "--format=%an %s")).toMatch(/^b b: turn/);

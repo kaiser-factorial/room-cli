@@ -267,6 +267,22 @@ describe("Room", () => {
     expect(fakes.get("a")!.prompts[1]).not.toContain("a tool:");
   });
 
+  it("auto mode runs unmatched tool calls without asking, and still honours deny and ask rules", async () => {
+    const ui = quietUI(["allow"]);
+    const { room } = await open({ a: ["ASK:Edit notes.md", "ASK:Bash rm -rf build", "ASK:Write secrets.env"] }, ui);
+    room.setAuto(true);
+    room.addRule("a", "deny", "Bash rm *");
+    room.addRule("a", "ask", "Write *.env");
+    await room.say("@a go");
+    await room.say("@a again");
+    await room.say("@a once more");
+    const said = room.transcript.entries.filter((e) => e.from === "a").map((e) => e.text);
+    expect(said).toEqual(["edited", "not allowed", "edited"]);
+    // Only the explicit ask rule reached the human.
+    expect(ui.asked.map((r) => r.title)).toEqual(["Write secrets.env"]);
+    expect(ui.lines.some((l) => /allow by auto/.test(l))).toBe(false);
+  });
+
   it("benches a rate-limited seat at once, skips it in rounds and hand-offs, and @seat brings it back", async () => {
     const limit = "FAIL:You've hit your session limit|Internal error: You've hit your session limit · resets 2:10pm";
     const { room, fakes, ui } = await open({ a: [limit, "back now"], b: ["b one", "@a over to you", "b three"] });

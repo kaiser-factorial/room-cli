@@ -123,6 +123,7 @@ interface StartOptions {
   git: boolean;
   desks: boolean;
   parallel?: boolean;
+  auto?: boolean;
   turnTimeout: string;
 }
 
@@ -134,6 +135,7 @@ function roomOptions(cmd: Command): Command {
     .option("--no-git", "do not branch or commit per turn")
     .option("--no-desks", "seats share one working directory instead of a worktree each")
     .option("--parallel", "start in parallel discussion mode")
+    .option("--auto", "tool calls run without asking you, except deny and ask rules")
     .option("--turn-timeout <seconds>", "per-turn timeout", "600");
 }
 
@@ -163,6 +165,7 @@ async function runRoom(name: string, seats: SeatConfig[], opts: StartOptions): P
     ui,
     git: opts.git ? undefined : false,
     desks: opts.desks,
+    auto: opts.auto,
     mode: opts.parallel ? "parallel" : undefined,
     turnTimeoutMs: Number(opts.turnTimeout) * 1000,
   });
@@ -206,6 +209,7 @@ program
   .option("--no-git", "do not branch or commit per turn")
   .option("--no-desks", "seats share one working directory instead of a worktree each")
   .option("--parallel", "new rooms start in parallel discussion mode")
+  .option("--auto", "new rooms start in auto mode: tool calls run without asking, except deny and ask rules")
   .option("--turn-timeout <seconds>", "per-turn timeout", "600")
   .action((names: string[], opts: Omit<StartOptions, "cwd">) => {
     // stdout is the wire; anything else printed there corrupts it.
@@ -220,6 +224,7 @@ program
       human: opts.human,
       git: opts.git ? undefined : false,
       desks: opts.desks,
+      auto: opts.auto,
       mode: opts.parallel ? "parallel" : undefined,
       turnTimeoutMs: Number(opts.turnTimeout) * 1000,
       log: (line) => console.error(`room: ${line}`),

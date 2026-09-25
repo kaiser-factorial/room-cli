@@ -144,7 +144,7 @@ describe("room acp", () => {
     const { sessionId } = await ed.agent.request(acp.methods.agent.session.new, { cwd, mcpServers: [] });
 
     ed.answers.push("allow");
-    const r = await ed.prompt(sessionId, "@b >> edit calc.py return a + b");
+    const r = await ed.prompt(sessionId, "@b >> edit calc.py return a + b\n>> land");
     expect(ed.asked.length).toBe(1);
     const req = ed.asked[0];
     expect(req.sessionId).toBe(sessionId);
@@ -154,7 +154,7 @@ describe("room acp", () => {
     expect(req.options.map((o) => o.kind)).toEqual(["allow_once", "allow_always", "reject_once"]);
     expect(readFileSync(join(cwd, "calc.py"), "utf8")).toBe("return a + b\n");
     expect(git("log", "-1", "--format=%an")).toBe("b");
-    expect(r.text).toMatch(/\*\*b>\*\* edited calc.py \n\n\[room\] b landed 1 commit on room\/acp-\S+ \([0-9a-f]+\): 1 file changed/);
+    expect(r.text).toMatch(/\*\*b>\*\* edited calc.py \n\n\[land\] \n\n\[room\] b landed 1 commit on room\/acp-\S+ \([0-9a-f]+\): 1 file changed/);
     // The tool call itself, namespaced by seat and turn.
     const calls = ed.updates.slice(r.from).filter((u) => u.update.sessionUpdate === "tool_call");
     expect(calls.map((u) => (u.update as acp.ToolCall).toolCallId)).toEqual(["b:0:t1"]);
@@ -164,7 +164,7 @@ describe("room acp", () => {
     await ed.prompt(sessionId, "@b >> edit calc.py return a * b");
     expect(ed.asked.length).toBe(2);
     expect(ed.asked[1].toolCall.toolCallId).toBe("b:1:t1");
-    await ed.prompt(sessionId, "@b >> edit calc.py return a / b");
+    await ed.prompt(sessionId, "@b >> edit calc.py return a / b\n>> land");
     expect(ed.asked.length).toBe(2);
     expect(readFileSync(join(cwd, "calc.py"), "utf8")).toBe("return a / b\n");
     await ed.close();

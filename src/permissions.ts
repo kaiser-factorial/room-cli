@@ -29,7 +29,7 @@ export function matches(pattern: string, value: string): boolean {
   return re.test(value);
 }
 
-function hit(patterns: string[], req: { kind?: string; title: string }): boolean {
+export function hit(patterns: string[], req: { kind?: string; title: string }): boolean {
   return patterns.some((p) => (req.kind && matches(p, req.kind)) || matches(p, req.title));
 }
 
@@ -48,6 +48,11 @@ export interface DeciderHooks {
   /** A room-wide override checked before policy, e.g. "no edits during a parallel round". */
   override?(req: PermissionRequestView): "allow" | "deny" | undefined;
   askHuman(req: PermissionRequestView): Promise<HumanChoice>;
+  /**
+   * Auto mode: a call no rule matches runs without asking. Deny rules still
+   * block and explicit ask rules still ask.
+   */
+  auto?(): boolean;
   /** Called when the human picks "always". The pattern is the tool kind, or the title when there is no kind. */
   onAllowAlways(seat: string, pattern: string): void;
   log?(line: string): void;
@@ -70,7 +75,10 @@ export function makeDecider(hooks: DeciderHooks): PermissionDecider {
       hooks.log?.(`[${req.seat}] ${forced} by room: ${req.title}`);
       return optionFor(req, forced);
     }
-    const action = decide(hooks.policyFor(req.seat), req);
+    const policy = hooks.policyFor(req.seat);
+    const action = decide(policy, req);
+    // Allowed without a log line: the tool call itself is already on screen.
+    if (action === "ask" && hooks.auto?.() && !(policy && hit(policy.ask, req))) return optionFor(req, "allow");
     if (action !== "ask") {
       hooks.log?.(`[${req.seat}] ${action} by policy: ${req.title}`);
       return optionFor(req, action);

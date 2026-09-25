@@ -131,14 +131,18 @@ Each seat works in a git worktree (`.room/<room>/desks/<seat>`, branch
 seat's turn; `Room.landDesk` commits leftovers as the seat and merges the
 desk into the trunk after it, one trunk merge at a time (`withTrunk`). A
 conflict is aborted and handed back to the seat as a note in its next
-prompt. `[hold]` (first or last line of a reply) keeps a turn's work on
-the desk; `/land` lands it. Parallel rounds may edit with desks. Seats
+prompt. Every turn is committed on the desk as the seat (`closeTurn`);
+nothing merges into the trunk until the seat's reply says `[land]` or the
+human runs `/land` (`mergeDesk`). Parallel rounds may edit with desks. Seats
 get `GIT_AUTHOR_*` and `GIT_COMMITTER_*` set to their name. A room opened
 before desks starts its seats in fresh sessions in their desks.
 `--no-desks` keeps the shared-directory mode, and its tests use it.
 
-Decided with Corina: land automatically after every turn; seats commit
-for themselves and the room commits what they leave; seats can hold.
+Decided with Corina: seats commit for themselves and the room commits
+what they leave; auto-merging after every turn felt wrong (grok: "publish
+is the default"), so seats land their own work with `[land]`.
+Auto mode (`/auto`, `--auto`): unmatched tool calls are allowed without
+asking; deny and ask rules still apply.
 
 Background turns (`Room.startBackground`): from `/bg <seat> <task>` or a
 seat's `[background] <task>` line. The seat leaves the rotation, its

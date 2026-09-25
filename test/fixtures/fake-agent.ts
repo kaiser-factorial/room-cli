@@ -24,7 +24,7 @@
  *   >> pass                  say [pass]
  *   >> mention <name> <txt>  say "@name txt"
  *   >> commit <message>      git add -A and commit in the session's directory
- *   >> hold                  say [hold]
+ *   >> land                  say [land]
  * `{agent}` in an edit's text becomes the seat's git author name, so seats
  * given one instruction write different lines.
  * With no directive it says "ok".
@@ -133,8 +133,8 @@ async function runPrompt(sessionId: string, text: string, cx: Cx, signal: AbortS
       case "pass":
         await say("[pass]");
         break;
-      case "hold":
-        await say("[hold]");
+      case "land":
+        await say("[land]");
         break;
       case "commit":
         execFileSync("git", ["add", "-A"], { cwd: s.cwd });
