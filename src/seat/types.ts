@@ -79,6 +79,8 @@ export interface Seat {
   stop(): Promise<void>;
   /** Last few KB of the agent's stderr, for diagnostics. */
   stderrTail(): string;
+  /** The harness's session id once known. A cli seat learns it on its first turn. */
+  readonly sessionId?: string;
   /** Session modes, when the agent advertises them. */
   readonly modes?: { current?: string; available: Array<{ id: string; name: string }> };
   setMode?(modeId: string): Promise<void>;

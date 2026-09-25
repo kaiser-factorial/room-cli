@@ -211,6 +211,7 @@ export class Room {
     }
     // The seat has now seen everything up to and including its own reply.
     this.state.cursors[name] = this.transcript.last;
+    if (seat.sessionId) this.state.sessions[name] = seat.sessionId;
 
     if (this.useGit) {
       try {
