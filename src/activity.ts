@@ -21,7 +21,8 @@ interface Call {
 
 /** One line of text: control characters and newlines gone, capped. */
 function oneLine(text: string, max = LINE_MAX): string {
-  const flat = text.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
+  const visible = Array.from(text, (ch) => (ch.charCodeAt(0) < 0x20 || ch === "\u007f" ? " " : ch)).join("");
+  const flat = visible.replace(/\s+/g, " ").trim();
   return flat.length > max ? flat.slice(0, max - 1) + "…" : flat;
 }
 
