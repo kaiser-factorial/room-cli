@@ -18,7 +18,7 @@ Design", https://claude.ai/code/artifact/8624261e-8ed2-45ea-ad01-d8b06166e1e1
 | 4 room as an ACP agent + resume | done; works in Zed (2026-09-25) |
 | packaging: own pnpm package, `room` command | done; CI job `room` |
 | 5 Ink TUI | optional |
-| 6 parallel edits with worktrees | later |
+| 6 desks: a worktree per seat, landing on the trunk | done; background turns next |
 
 Tests: `pnpm install && pnpm test` in `packages/room`, 63 tests, run
 anywhere with Node 22+. The room is no longer in the root's npm workspace:
@@ -122,6 +122,28 @@ From Corina:
   so a thinking seat (grok) looked silent and then answered all at once;
   thoughts now stream, dimmed (`/thoughts off` folds them).
 - Seeing that someone is typing, and a richer layout: phase 5 (TUI).
+
+## Phase 6: desks
+
+Each seat works in a git worktree (`.room/<room>/desks/<seat>`, branch
+`desk/<room>/<seat>`) and owns git there; the human's tree holds the trunk
+`room/<room>`. `Room.syncDesk` merges the trunk into a desk before the
+seat's turn; `Room.landDesk` commits leftovers as the seat and merges the
+desk into the trunk after it, one trunk merge at a time (`withTrunk`). A
+conflict is aborted and handed back to the seat as a note in its next
+prompt. `[hold]` (first or last line of a reply) keeps a turn's work on
+the desk; `/land` lands it. Parallel rounds may edit with desks. Seats
+get `GIT_AUTHOR_*` and `GIT_COMMITTER_*` set to their name. A room opened
+before desks starts its seats in fresh sessions in their desks.
+`--no-desks` keeps the shared-directory mode, and its tests use it.
+
+Decided with Corina: land automatically after every turn; seats commit
+for themselves and the room commits what they leave; seats can hold.
+
+Next: background turns (`/bg <seat> <task>`): a seat works in its desk
+while the conversation goes on, skipped in rounds, its permission prompts
+queued to the human, and a room note when it finishes. Needs the REPL's
+line source to stack a permission prompt over the human's prompt.
 
 ## Known warts
 

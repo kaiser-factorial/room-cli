@@ -5,9 +5,9 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { ConfigError, validateSeatName } from "./config.js";
-import { commitTurn, ensureRoomBranch, headSha, headSubject, isRepo } from "./git.js";
+import { commitTurn, ensureRoomBranch, ensureWorktree, headSha, headSubject, isRepo, mergeRef } from "./git.js";
 import { emptyPolicy, makeDecider, type Action, type HumanChoice, type Policy, type SeatPolicy } from "./permissions.js";
-import { buildPreamble, PASS } from "./preamble.js";
+import { buildPreamble, HOLD, PASS } from "./preamble.js";
 import { parseAddress, scanMentions, Scheduler } from "./scheduler.js";
 import { describeError, withTimeout } from "./seat/acp.js";
 import { createSeat } from "./seat/index.js";
@@ -35,6 +35,11 @@ export interface RoomOptions {
   turnTimeoutMs?: number;
   /** Commit after edit turns on a `room/<name>` branch. Default: true when cwd is a repo. */
   git?: boolean;
+  /**
+   * Give each seat its own desk: a git worktree on `desk/<room>/<seat>`,
+   * merged into the room's branch after each turn. Default: on with git.
+   */
+  desks?: boolean;
   /** Initial mode for a new room. A resumed room keeps its saved mode. */
   mode?: RoomMode;
   /** Seat factory, for tests. */
@@ -50,12 +55,20 @@ export interface RoomState {
   seats?: string[];
   cursors: Record<string, number>;
   sessions: Record<string, string>;
+  /** Each seat's desk, when the room has them. */
+  desks?: Record<string, { path: string; branch: string }>;
   modes: Record<string, string>;
   policy: Policy;
 }
 
 /** Errors that retrying cannot fix before something outside the room changes. */
 const BENCH_NOW = /rate.?limit|session limit|usage limit|quota|auth(entication)? required|log ?in/i;
+
+/** A reply whose first or last line is `[hold]`. */
+export function wantsHold(text: string): boolean {
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  return lines.length > 0 && (lines[0] === HOLD || lines[lines.length - 1] === HOLD);
+}
 
 /** `a.py, b.py` for a commit note; the first few files, then a count. */
 function fileList(files: string[], max = 5): string {
@@ -88,6 +101,13 @@ export class Room {
   private readonly statePath: string;
   private readonly stateDir: string;
   private useGit = false;
+  private useDesks = false;
+  /** Trunk merges run one at a time, whichever seat finishes first. */
+  private trunkLock: Promise<unknown> = Promise.resolve();
+  /** Seats whose work stays on their desk: they ended their last turn with `[hold]`. */
+  readonly holding = new Set<string>();
+  /** What happened to a seat's desk since its last turn, told to it on its next. */
+  private readonly deskNotes = new Map<string, string>();
   private stopped = false;
   private busy = false;
   private handoffs = 0;
@@ -153,6 +173,7 @@ export class Room {
   static async open(opts: RoomOptions): Promise<Room> {
     const room = new Room(opts);
     room.useGit = opts.git ?? (await isRepo(opts.cwd));
+    room.useDesks = room.useGit && opts.desks !== false;
     return room;
   }
 
@@ -161,6 +182,11 @@ export class Room {
     const config = this.opts.seats.find((s) => s.name === seat);
     const harness = config ? basename(config.command) : undefined;
     return harness && harness !== seat ? `${seat} (${harness})` : seat;
+  }
+
+  /** Where a seat works: its desk, or the shared directory. */
+  seatCwd(seat: string): string {
+    return this.state.desks?.[seat]?.path ?? this.opts.cwd;
   }
 
   get seatNames(): string[] {
@@ -179,21 +205,35 @@ export class Room {
   /** Spawn every seat, open sessions, apply modes, and note it in the transcript. */
   async start(): Promise<void> {
     const { ui } = this.opts;
+    /** Seats whose saved session was opened outside a desk: they start fresh in one. */
+    const movedIn = new Set<string>();
     if (this.useGit) {
       this.state.branch = await ensureRoomBranch(this.opts.cwd, this.opts.name);
-      ui.status(`git: on branch ${this.state.branch}, committing after every edit turn`);
       await this.commitHumanChanges("changes before the room opened");
+      if (this.useDesks) {
+        const desks = (this.state.desks ??= {});
+        for (const s of this.opts.seats) {
+          if (!desks[s.name] && this.state.sessions[s.name]) movedIn.add(s.name);
+          const desk = { path: join(this.stateDir, "desks", s.name), branch: `desk/${this.opts.name}/${s.name}` };
+          await ensureWorktree(this.opts.cwd, desk.path, desk.branch, this.state.branch);
+          desks[s.name] = desk;
+        }
+        ui.status(`git: trunk ${this.state.branch}; each seat works in its own desk and lands on the trunk after its turn`);
+      } else {
+        ui.status(`git: on branch ${this.state.branch}, committing after every edit turn`);
+      }
     }
     const decide = makeDecider({
       policyFor: (seat) => this.state.policy[seat],
+      // With desks every seat edits its own copy, so a parallel round can change files too.
       override: (req) =>
-        this.state.mode === "parallel" && req.kind && MUTATING_KINDS.has(req.kind) ? "deny" : undefined,
+        !this.useDesks && this.state.mode === "parallel" && req.kind && MUTATING_KINDS.has(req.kind) ? "deny" : undefined,
       askHuman: (req) => ui.askHuman(req),
       onAllowAlways: (seat, pattern) => this.addRule(seat, "allow", pattern),
       log: (line) => ui.status(line),
     });
     try {
-      await this.startSeats(decide);
+      await this.startSeats(decide, movedIn);
     } catch (err) {
       // One seat failing must not leave the others running.
       await Promise.all([...this.seats.values()].map((s) => s.stop().catch(() => undefined)));
@@ -211,10 +251,24 @@ export class Room {
     }
   }
 
-  private async startSeats(decide: PermissionDecider): Promise<void> {
+  private async startSeats(decide: PermissionDecider, movedIn: Set<string>): Promise<void> {
     const { ui } = this.opts;
     await Promise.all(
-      this.opts.seats.map(async (config) => {
+      this.opts.seats.map(async (seatConfig) => {
+        // In a desk the seat commits for itself: under its own name, not the human's git identity.
+        const config: SeatConfig = this.useDesks
+          ? {
+              ...seatConfig,
+              env: {
+                GIT_AUTHOR_NAME: seatConfig.name,
+                GIT_AUTHOR_EMAIL: `${seatConfig.name}@room`,
+                GIT_COMMITTER_NAME: seatConfig.name,
+                GIT_COMMITTER_EMAIL: `${seatConfig.name}@room`,
+                ...seatConfig.env,
+              },
+            }
+          : seatConfig;
+        const cwd = this.seatCwd(config.name);
         const notice = (text: string) => ui.status(`${this.label(config.name)} ${text}`);
         const seat = this.opts.makeSeat ? this.opts.makeSeat(config, decide, notice) : createSeat(config, decide, notice);
         this.seats.set(config.name, seat);
@@ -223,12 +277,13 @@ export class Room {
         const saved = this.state.sessions[config.name];
         const seen = this.state.cursors[config.name];
         let resumed = false;
-        if (saved && seen !== undefined && !saved.startsWith("pending:") && seat.resumeSession) {
-          resumed = await seat.resumeSession(saved, this.opts.cwd);
+        if (movedIn.has(config.name)) ui.status(`${config.name}: moving into its desk; starting a fresh session`);
+        else if (saved && seen !== undefined && !saved.startsWith("pending:") && seat.resumeSession) {
+          resumed = await seat.resumeSession(saved, cwd);
           ui.status(resumed ? `${config.name}: resumed session ${saved}` : `${config.name}: could not resume; replaying the transcript`);
         }
         if (!resumed) {
-          const sid = await seat.newSession(this.opts.cwd);
+          const sid = await seat.newSession(cwd);
           this.state.sessions[config.name] = sid;
           if (seen !== undefined) delete this.state.cursors[config.name];
         }
@@ -388,6 +443,7 @@ export class Room {
         ui.status(`${n} is a cli seat: its edits cannot be refused, only asked for in the prompt`);
       }
     }
+    if (this.useDesks) for (const n of names) await this.syncDesk(n);
     // Everyone answers this snapshot; afterwards each has seen up to here, plus its own reply.
     const snapshotLast = this.transcript.last;
     const prompts = names.map((n) => this.buildPrompt(n, true));
@@ -397,11 +453,13 @@ export class Room {
     );
     // Replay in roster order so the UI never interleaves two seats.
     const replies: Array<{ seat: string; entry: Entry }> = [];
-    names.forEach((n, i) => {
+    for (const [i, n] of names.entries()) {
       for (const ev of buffers.get(n)!) ui.seatEvent(n, ev);
       const entry = this.recordTurn(n, results[i]);
       replies.push({ seat: n, entry });
-    });
+      // Landed in roster order: a later seat that touched the same lines conflicts and is told.
+      if (this.useDesks) await this.landDesk(n, entry, results[i].text);
+    }
     // Next round each seat gets the whole batch; its own entry is skipped when rendering.
     for (const r of replies) this.state.cursors[r.seat] = snapshotLast;
     this.saveState();
@@ -421,12 +479,22 @@ export class Room {
           human: this.opts.human,
           promptsForwarded: config.adapter === "acp" && !(config.deny?.includes("*") || config.allow?.includes("*")),
           branch: this.state.branch,
+          desk: this.state.desks?.[name],
         }) + "\n\n---\n\n"
       : "";
-    const note = parallel
-      ? "[room]: Parallel discussion round: every seat answers at once and file changes are refused this round.\n\n"
-      : "";
-    return preamble + note + (rendered || `[room]: Your turn. Reply ${PASS} if you have nothing to add.`);
+    const note = !parallel
+      ? ""
+      : this.useDesks
+        ? "[room]: Parallel round: every seat answers at once, each in its own desk.\n\n"
+        : "[room]: Parallel discussion round: every seat answers at once and file changes are refused this round.\n\n";
+    const desk = this.deskNotes.get(name);
+    this.deskNotes.delete(name);
+    return (
+      preamble +
+      note +
+      (rendered || `[room]: Your turn. Reply ${PASS} if you have nothing to add.`) +
+      (desk ? `\n\n${desk}` : "")
+    );
   }
 
   private async collectTurn(name: string, prompt: string, emit: (ev: SeatEvent) => void): Promise<TurnResult> {
@@ -500,6 +568,7 @@ export class Room {
   async runTurn(name: string): Promise<Entry | undefined> {
     const { ui } = this.opts;
     if (!this.seats.has(name)) throw new Error(`no such seat: ${name}`);
+    if (this.useDesks) await this.syncDesk(name);
     const prompt = this.buildPrompt(name, false);
     const headBefore = this.useGit ? await headSha(this.opts.cwd).catch(() => undefined) : undefined;
     const result = await this.collectTurn(name, prompt, (ev) => ui.seatEvent(name, ev));
@@ -507,7 +576,9 @@ export class Room {
     // The seat has now seen everything up to and including its own reply.
     this.state.cursors[name] = this.transcript.last;
 
-    if (this.useGit) {
+    if (this.useDesks) {
+      await this.landDesk(name, entry, result.text);
+    } else if (this.useGit) {
       try {
         const commit = await commitTurn(this.opts.cwd, name, `${name}: turn ${entry.id}\n\n${result.text.trim().slice(0, 400)}`);
         if (commit) {
@@ -528,6 +599,88 @@ export class Room {
     }
     this.saveState();
     return entry;
+  }
+
+  private withTrunk<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.trunkLock.then(fn, fn);
+    this.trunkLock = run.catch(() => undefined);
+    return run;
+  }
+
+  /**
+   * Before a seat's turn: bring the trunk into its desk, so it builds on
+   * everyone's work. A conflict is left to the seat, which owns its desk.
+   */
+  private async syncDesk(name: string): Promise<void> {
+    const desk = this.state.desks?.[name];
+    const trunk = this.state.branch;
+    if (!desk || !trunk) return;
+    try {
+      // Anything left uncommitted (a turn that failed before landing) is the seat's;
+      // held work stays as the seat left it.
+      if (!this.holding.has(name)) await commitTurn(desk.path, name, `${name}: uncommitted work`);
+      const r = await this.withTrunk(() => mergeRef(desk.path, trunk, name));
+      if (r.status === "merged") {
+        this.deskNotes.set(name, `[room]: Merged ${trunk} into your branch: ${r.stat} (${fileList(r.files)}).`);
+      } else if (r.status === "conflict") {
+        const where = r.files.length ? ` in ${fileList(r.files)}` : " (uncommitted changes in the way)";
+        this.opts.ui.status(`${name}'s desk conflicts with ${trunk}${where}; ${name} is asked to merge it`);
+        this.deskNotes.set(
+          name,
+          `[room]: ${trunk} has changes that conflict with your branch${where}. Merge it (\`git merge ${trunk}\`), ` +
+            `resolve, and commit; the room brings your branch into ${trunk} when your turn ends.`,
+        );
+      }
+    } catch (err) {
+      this.opts.ui.status(`${name}: could not update its desk: ${(err as Error).message}`);
+    }
+  }
+
+  /**
+   * After a seat's turn: commit what it left uncommitted, as the seat, and
+   * merge its branch into the trunk. A conflict leaves the work on the desk.
+   */
+  private async landDesk(name: string, entry: Entry, text: string): Promise<void> {
+    const desk = this.state.desks?.[name];
+    const trunk = this.state.branch;
+    if (!desk || !trunk) return;
+    const { ui } = this.opts;
+    if (wantsHold(text)) {
+      this.holding.add(name);
+      const line = `${name} is holding its work on ${desk.branch}; it lands after a turn ${name} ends without ${HOLD}, or on /land ${name}`;
+      ui.status(line);
+      this.transcript.append("room", "system", line);
+      return;
+    }
+    this.holding.delete(name);
+    try {
+      await commitTurn(desk.path, name, `${name}: turn ${entry.id}\n\n${text.trim().slice(0, 400)}`);
+      await this.withTrunk(async () => {
+        await this.commitHumanChanges(`changes before ${name}'s work landed`);
+        const r = await mergeRef(this.opts.cwd, desk.branch, name);
+        if (r.status === "merged") {
+          const line = `${name} landed ${r.commits} commit${r.commits === 1 ? "" : "s"} on ${trunk} (${r.sha}): ${r.stat} (${fileList(r.files)})`;
+          ui.status(line);
+          this.transcript.append("room", "commit", line);
+        } else if (r.status === "conflict") {
+          const line = `${name}'s work conflicts with ${trunk} in ${fileList(r.files)}; it stays on ${desk.branch} until ${name} merges ${trunk} into it`;
+          ui.status(line);
+          this.transcript.append("room", "system", line);
+        }
+      });
+    } catch (err) {
+      ui.status(`${name}: could not land its work: ${(err as Error).message}`);
+    }
+    this.saveState();
+  }
+
+  /** Land a seat's work now, held or not: the human's `/land`. */
+  async land(name: string): Promise<boolean> {
+    if (!this.state.desks?.[name]) return false;
+    if (this.active.has(name)) throw new Error(`${name} is mid-turn; land it after`);
+    this.holding.delete(name);
+    await this.landDesk(name, this.transcript.append("room", "system", `${this.opts.human} landed ${name}'s work.`), "");
+    return true;
   }
 
   /** Commit the working tree as the human, if dirty, so seat commits contain only seat changes. */

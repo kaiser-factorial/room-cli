@@ -29,6 +29,8 @@ export interface AcpServerOptions {
   human: string;
   /** Commit per turn on a `room/<name>` branch. Default: when the session's cwd is a repo. */
   git?: boolean;
+  /** A worktree per seat. Default: with git. */
+  desks?: boolean;
   /** Room mode for new sessions. */
   mode?: RoomMode;
   turnTimeoutMs?: number;
@@ -60,6 +62,7 @@ const COMMANDS: acp.AvailableCommand[] = [
   { name: "perm", description: "Show a seat's room policy, or add a rule", input: { hint: "<seat> [allow|ask|deny <pattern>]" } },
   { name: "unperm", description: "Remove a room policy rule", input: { hint: "<seat> <pattern>" } },
   { name: "unbench", description: "Bring back a seat benched after failing", input: { hint: "<seat>" } },
+  { name: "land", description: "Merge a seat's desk into the trunk now, even if it is holding", input: { hint: "<seat>" } },
   { name: "help", description: "What you can type here" },
 ];
 
@@ -105,6 +108,7 @@ export function serveAcp(stream: acp.Stream, opts: AcpServerOptions): AcpServer 
         human: opts.human,
         ui,
         git: opts.git,
+        desks: opts.desks,
         mode: isNew ? opts.mode : undefined,
         turnTimeoutMs: opts.turnTimeoutMs,
         makeSeat: opts.makeSeat,

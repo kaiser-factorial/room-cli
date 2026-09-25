@@ -21,6 +21,8 @@ export function personaText(seat: SeatConfig): string | undefined {
 }
 
 export const PASS = "[pass]";
+/** A seat ending its reply with this keeps the turn's work on its desk, unlanded. */
+export const HOLD = "[hold]";
 
 export interface PreambleOptions {
   seat: SeatConfig;
@@ -29,6 +31,8 @@ export interface PreambleOptions {
   /** Whether this seat's permission prompts reach the human. */
   promptsForwarded: boolean;
   branch?: string;
+  /** The seat's own worktree, when the room gives seats desks. */
+  desk?: { path: string; branch: string };
 }
 
 export function rolePrompt(roleId: string | undefined, name: string): string | undefined {
@@ -52,7 +56,9 @@ export function buildPreamble(o: PreambleOptions): string {
   const perms = o.promptsForwarded
     ? `Your permission prompts reach ${o.human}. Answers can take a while, so batch small tool calls into one turn rather than asking many times.`
     : `Your permission prompts do not reach anyone. You run in a sandbox, and actions outside the workspace will fail.`;
-  const git = o.branch
+  const git = o.desk && o.branch
+    ? `You work in your own desk: a git worktree at ${o.desk.path}, on branch ${o.desk.branch}. It is yours: edit, run, and commit there freely, with messages that say why. Stay in it: do not check out other branches, push, or touch other worktrees. The shared trunk is ${o.branch}, in ${o.human}'s working directory. Before each of your turns the room merges the trunk into your branch, so you build on everyone's work; when your turn ends it commits whatever you left uncommitted, as you, and merges your branch into the trunk. If a merge conflicts, the room tells you, and resolving it is yours. Not ready to share yet? End your reply with \`${HOLD}\` on its own line: the room leaves this turn's work on your desk, uncommitted and unmerged, until a turn you end without it.`
+    : o.branch
     ? `One shared working directory on branch ${o.branch}. The room commits after every turn that changes files, with you as author, so other seats see your edits through git and can build on them. Do not commit, branch, stash, or create worktrees yourself.`
     : `One shared working directory. Other seats see your file changes directly.`;
 

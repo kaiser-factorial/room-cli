@@ -123,7 +123,8 @@ describe("a seat that commits on its own", () => {
         return "done, and I committed it";
       },
     ]);
-    const room = await Room.open({ name: "adv", cwd: dir, seats: [two[0]], human: "Corina", ui, makeSeat: () => a });
+    // Shared-directory mode, where seats are told not to commit; with desks they may.
+    const room = await Room.open({ name: "adv", cwd: dir, seats: [two[0]], human: "Corina", ui, desks: false, makeSeat: () => a });
     await room.start();
     await room.say("go");
     const notes = room.transcript.entries.filter((e) => e.from === "room" && /committed/i.test(e.text));

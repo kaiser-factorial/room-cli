@@ -2,6 +2,8 @@
  * Commit-per-turn versioning. The room owns git; seats are told not to touch it.
  */
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { promisify } from "node:util";
 
 const run = promisify(execFile);
@@ -76,4 +78,56 @@ export async function commitTurn(
   const sha = await git(cwd, ["rev-parse", "--short", "HEAD"]);
   const stat = (await git(cwd, ["show", "--stat", "--format=", "HEAD"])).split("\n").pop()?.trim() ?? "";
   return { sha, stat, files: staged.split("\n") };
+}
+
+async function refExists(cwd: string, ref: string): Promise<boolean> {
+  try {
+    await git(cwd, ["rev-parse", "--verify", "--quiet", ref]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A seat's desk: a worktree at `path` on `branch`, branched from `from` the
+ * first time. Reopening a room reuses it.
+ */
+export async function ensureWorktree(cwd: string, path: string, branch: string, from: string): Promise<void> {
+  if (existsSync(join(path, ".git"))) return;
+  await git(cwd, ["worktree", "prune"]);
+  if (await refExists(cwd, `refs/heads/${branch}`)) await git(cwd, ["worktree", "add", "-q", path, branch]);
+  else await git(cwd, ["worktree", "add", "-q", "-b", branch, path, from]);
+}
+
+/** Commits on `to` that `from` does not have. */
+export async function commitsAhead(cwd: string, from: string, to: string): Promise<number> {
+  return Number(await git(cwd, ["rev-list", "--count", `${from}..${to}`]));
+}
+
+export type MergeResult =
+  | { status: "up-to-date" }
+  | { status: "merged"; sha: string; commits: number; stat: string; files: string[] }
+  | { status: "conflict"; files: string[] };
+
+/**
+ * Merge `ref` into the branch checked out at `cwd`, fast-forwarding when it
+ * can, as `author` when it cannot. A conflict is aborted, leaving the tree
+ * as it was, and reported with the conflicted files.
+ */
+export async function mergeRef(cwd: string, ref: string, author: string): Promise<MergeResult> {
+  const before = await git(cwd, ["rev-parse", "HEAD"]);
+  const commits = await commitsAhead(cwd, before, ref);
+  if (commits === 0) return { status: "up-to-date" };
+  try {
+    await git(cwd, ["-c", `user.name=${author}`, "-c", `user.email=${author}@room`, "merge", "-q", "--no-edit", ref]);
+  } catch {
+    const files = (await git(cwd, ["diff", "--name-only", "--diff-filter=U"]).catch(() => "")).split("\n").filter(Boolean);
+    await git(cwd, ["merge", "--abort"]).catch(() => undefined);
+    return { status: "conflict", files };
+  }
+  const sha = await git(cwd, ["rev-parse", "--short", "HEAD"]);
+  const stat = (await git(cwd, ["diff", "--shortstat", before, "HEAD"])).trim();
+  const files = (await git(cwd, ["diff", "--name-only", before, "HEAD"])).split("\n").filter(Boolean);
+  return { status: "merged", sha, commits, stat, files };
 }

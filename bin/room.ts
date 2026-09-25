@@ -121,6 +121,7 @@ interface StartOptions {
   human: string;
   roomFile?: string;
   git: boolean;
+  desks: boolean;
   parallel?: boolean;
   turnTimeout: string;
 }
@@ -131,6 +132,7 @@ function roomOptions(cmd: Command): Command {
     .option("--human <name>", "your name in the transcript", "Corina")
     .option("--room-file <file>", "TOML with seats, modes, roles, and policy")
     .option("--no-git", "do not branch or commit per turn")
+    .option("--no-desks", "seats share one working directory instead of a worktree each")
     .option("--parallel", "start in parallel discussion mode")
     .option("--turn-timeout <seconds>", "per-turn timeout", "600");
 }
@@ -160,6 +162,7 @@ async function runRoom(name: string, seats: SeatConfig[], opts: StartOptions): P
     human: opts.human,
     ui,
     git: opts.git ? undefined : false,
+    desks: opts.desks,
     mode: opts.parallel ? "parallel" : undefined,
     turnTimeoutMs: Number(opts.turnTimeout) * 1000,
   });
@@ -201,6 +204,7 @@ program
   .option("--human <name>", "your name in the transcript", "Corina")
   .option("--room-file <file>", "TOML with seats, modes, roles, and policy")
   .option("--no-git", "do not branch or commit per turn")
+  .option("--no-desks", "seats share one working directory instead of a worktree each")
   .option("--parallel", "new rooms start in parallel discussion mode")
   .option("--turn-timeout <seconds>", "per-turn timeout", "600")
   .action((names: string[], opts: Omit<StartOptions, "cwd">) => {
@@ -215,6 +219,7 @@ program
       seats,
       human: opts.human,
       git: opts.git ? undefined : false,
+      desks: opts.desks,
       mode: opts.parallel ? "parallel" : undefined,
       turnTimeoutMs: Number(opts.turnTimeout) * 1000,
       log: (line) => console.error(`room: ${line}`),

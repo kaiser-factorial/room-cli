@@ -23,8 +23,13 @@
  *   >> sleep <ms>            wait, cancellable
  *   >> pass                  say [pass]
  *   >> mention <name> <txt>  say "@name txt"
+ *   >> commit <message>      git add -A and commit in the session's directory
+ *   >> hold                  say [hold]
+ * `{agent}` in an edit's text becomes the seat's git author name, so seats
+ * given one instruction write different lines.
  * With no directive it says "ok".
  */
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -128,6 +133,14 @@ async function runPrompt(sessionId: string, text: string, cx: Cx, signal: AbortS
       case "pass":
         await say("[pass]");
         break;
+      case "hold":
+        await say("[hold]");
+        break;
+      case "commit":
+        execFileSync("git", ["add", "-A"], { cwd: s.cwd });
+        execFileSync("git", ["commit", "-q", "-m", d.arg], { cwd: s.cwd });
+        await say("committed");
+        break;
       case "mention": {
         const [name, ...rest] = d.arg.split(" ");
         await say(`@${name} ${rest.join(" ")}`);
@@ -165,7 +178,7 @@ async function runPrompt(sessionId: string, text: string, cx: Cx, signal: AbortS
       case "edit": {
         const [rel, ...rest] = d.arg.split(" ");
         const path = resolve(s.cwd, rel);
-        const newText = rest.join(" ") + "\n";
+        const newText = rest.join(" ").replaceAll("{agent}", process.env.GIT_AUTHOR_NAME ?? "fake") + "\n";
         const oldText = existsSync(path) ? readFileSync(path, "utf8") : undefined;
         const id = `t${++toolN}`;
         const call = {

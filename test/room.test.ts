@@ -339,6 +339,8 @@ describe("Room", () => {
       seats: [seats[0]],
       human: "Corina",
       ui,
+      // The shared-directory mode: the seat writes straight into the room's working tree.
+      desks: false,
       makeSeat: (config, decide) => {
         const f = new FakeSeat(config, [
           () => {

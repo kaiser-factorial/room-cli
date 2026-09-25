@@ -77,11 +77,33 @@ and not only on its summary:
 [grok]: Fixed. Re-running.
 ``` Your message starts a round in roster order; a
 leading `@seat` sends it to that seat only; an empty line runs another round
-with nothing new. A seat replying `[pass]` is recorded as a pass. When the
-working directory is a git repo the room checks out `room/<name>` and commits
-after every turn that changed files, with the seat as author, so `git log`
-and `git blame` say who did what. State lives in `.room/<name>/`
-(transcript.jsonl, state.json), which the room keeps out of git.
+with nothing new. A seat replying `[pass]` is recorded as a pass. In a git
+repo, each seat works in its own desk (below) and its work lands on the
+room's branch, so `git log` and `git blame` say who did what. State lives
+in `.room/<name>/` (transcript.jsonl, state.json, desks/), which the room
+keeps out of git.
+
+### Desks
+
+In a git repo the room checks out `room/<name>`, the **trunk**, in your
+working directory, and gives every seat a **desk**: a git worktree at
+`.room/<name>/desks/<seat>` on its own branch, `desk/<name>/<seat>`.
+
+- A seat owns git in its desk: it edits, runs, and commits there, with its
+  own messages. Its commits carry its name (the room sets `GIT_AUTHOR_NAME`
+  for it), not yours.
+- Before each of its turns the room merges the trunk into its desk, so it
+  builds on everyone's work. After the turn it commits whatever the seat
+  left uncommitted, as the seat, and merges the desk into the trunk. Your
+  own edits in the trunk are committed as you first.
+- Not ready to share? A seat ending its reply with `[hold]` keeps the
+  turn's work on its desk, uncommitted and unmerged, until a turn it ends
+  without it. `/land <seat>` lands held work yourself; `/seats` shows who
+  is holding.
+- A merge that conflicts is aborted, the work stays on the desk, and the
+  seat is told on its next turn to merge the trunk and resolve it.
+- `--no-desks` goes back to one shared directory, where the room commits
+  after each turn and seats are told not to touch git.
 
 ```
 Corina> look at hello.py and tell me what is wrong
@@ -127,11 +149,12 @@ request the room never made, a non-JSON line) are shown once each, named.
   nothing new since.
 - **Parallel** (`/parallel`, `/sequential`, or `--parallel`): every queued
   seat answers the same snapshot at once, replies are shown one seat at a
-  time, and each seat sees the others' replies next round. File edits,
-  deletes, moves, and shell commands are refused by the room during a
-  parallel round without asking you, because several seats writing one
-  working directory at once would collide. Hand-offs from a parallel batch
-  run afterwards.
+  time, and each seat sees the others' replies next round. With desks,
+  every seat edits its own copy and the batch lands in roster order; a
+  later seat that touched the same lines gets the conflict back. Without
+  desks, file edits, deletes, moves, and shell commands are refused during
+  a parallel round without asking you, since several seats would be
+  writing one directory. Hand-offs from a parallel batch run afterwards.
 
 ### Permissions, two levers
 

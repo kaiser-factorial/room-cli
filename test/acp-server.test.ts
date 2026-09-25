@@ -154,7 +154,7 @@ describe("room acp", () => {
     expect(req.options.map((o) => o.kind)).toEqual(["allow_once", "allow_always", "reject_once"]);
     expect(readFileSync(join(cwd, "calc.py"), "utf8")).toBe("return a + b\n");
     expect(git("log", "-1", "--format=%an")).toBe("b");
-    expect(r.text).toMatch(/\*\*b>\*\* edited calc.py \n\n\[room\] b committed [0-9a-f]+: 1 file changed/);
+    expect(r.text).toMatch(/\*\*b>\*\* edited calc.py \n\n\[room\] b landed 1 commit on room\/acp-\S+ \([0-9a-f]+\): 1 file changed/);
     // The tool call itself, namespaced by seat and turn.
     const calls = ed.updates.slice(r.from).filter((u) => u.update.sessionUpdate === "tool_call");
     expect(calls.map((u) => (u.update as acp.ToolCall).toolCallId)).toEqual(["b:0:t1"]);

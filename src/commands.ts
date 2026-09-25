@@ -9,6 +9,7 @@ export const COMMAND_HELP = `  /seats                 seats, modes, and what is 
   /parallel, /sequential room mode: all seats answer at once (no edits), or in turn
   /mode <seat> [id]      show or set a seat's session mode
   /unbench <seat>        bring back a seat benched after failing (so does @seat)
+  /land <seat>           merge a seat's desk into the trunk now, even if it is holding
   /perm <seat>           show a seat's policy
   /perm <seat> allow|ask|deny <pattern>   add a rule (kind like edit, or title glob like "Write *")
   /unperm <seat> <pattern>                remove a rule`;
@@ -27,10 +28,20 @@ export async function runCommand(room: Room, text: string, out: (line: string) =
       for (const name of room.seatNames) {
         const modes = room.modesOf(name);
         const mode = room.state.modes[name] ?? modes?.current ?? "-";
-        const benched = room.benched.has(name) ? "  (benched)" : "";
+        const benched = (room.benched.has(name) ? "  (benched)" : "") + (room.holding.has(name) ? "  (holding)" : "");
         out(`  ${name.padEnd(8)} mode ${mode.padEnd(12)} session ${room.state.sessions[name] ?? "-"}${benched}`);
       }
       if (room.scheduler.pending.length) out(`  queued: ${room.scheduler.pending.join(", ")}`);
+      return;
+    }
+    case "/land": {
+      const [seat] = args;
+      if (!seat || !room.seatNames.includes(seat)) return out(`  usage: /land <seat>; holding: ${[...room.holding].join(", ") || "none"}`);
+      try {
+        if (!(await room.land(seat))) out(`  ${seat} has no desk (the room is not using desks)`);
+      } catch (err) {
+        out(`  ${(err as Error).message}`);
+      }
       return;
     }
     case "/unbench": {
