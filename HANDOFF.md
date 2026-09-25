@@ -15,13 +15,15 @@ Design", https://claude.ai/code/artifact/8624261e-8ed2-45ea-ad01-d8b06166e1e1
 | adversarial pass | done (seats are untrusted; see README) |
 | 3 hand-offs, passing, parallel mode | done |
 | tool visibility (diffs, command output in the REPL) | done |
-| 4 room as an ACP agent + resume | done; not yet tried in Zed itself (see below) |
+| 4 room as an ACP agent + resume | done; works in Zed (2026-09-25) |
+| packaging: own pnpm package, `room` command | done; CI job `room` |
 | 5 Ink TUI | optional |
 | 6 parallel edits with worktrees | later |
 
-Tests: `npm test` in `packages/room`, 63 tests, run anywhere with Node.
-Run `npm install` from the repo root first: vitest picks up the root
-`vite.config.ts`, which needs the root's dependencies.
+Tests: `pnpm install && pnpm test` in `packages/room`, 63 tests, run
+anywhere with Node 22+. The room is no longer in the root's npm workspace:
+it has its own `pnpm-lock.yaml`, its own `vitest.config.ts`, and a `room`
+job in CI (typecheck, tests, build). The web app is still npm.
 `test/fake-harness.test.ts` spawns real subprocesses that speak the real
 protocol, which covers what the live checks on the owner's Mac cover:
 handshake, modes, the permission round trip with diffs, command output,
@@ -92,11 +94,16 @@ the API key (`args = ["--model", ...]` or the adapter's env).
 - `room resume <name> [seats...]`: refuses without `.room/<name>/state.json`;
   with no seats named, reopens the lineup saved in `state.seats`.
 
-Still to do for phase 4: register it in Zed (`agent_servers`, see README)
-and VS Code's ACP client, and watch it with real seats. The Zed settings
-shape in the README follows Zed's external-agents docs (`"type": "custom"`).
+Tried in Zed on 2026-09-25 with claude and grok: startup lines, per-seat
+paragraphs, and a hand-off to the human all rendered. VS Code's ACP
+client is untried. The Zed settings shape in the README follows Zed's
+external-agents docs (`"type": "custom"`).
 
 ## Known warts
+
+- A failed turn's streamed text is recorded as the seat's message. Seen in
+  Zed: claude's "You've hit your session limit" became a claude message
+  that grok then quoted. It should be only a `[room]` note. Not yet fixed.
 
 - Fixed: a seat's `[pass]` printed as `pass]` (hermes, 2026-09-25). Not
   cosmetic: `AcpSeat.prompt` raced `updates.next()` against the turn's end

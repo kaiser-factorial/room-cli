@@ -14,20 +14,44 @@ done: the doctor, a room with a streaming REPL, the CLI fallback adapter,
 seats that address each other, pass, and answer in parallel, and the room
 served to an editor as an ACP agent, with resume.
 
+## Install
+
+The room is a pnpm package of its own, outside the web app's npm
+workspace. It needs Node 22 or newer and pnpm 10 (`corepack enable`, or
+`brew install pnpm`). pnpm keeps one content-addressed store per machine,
+so the adapters' dependencies take disk space once however many checkouts
+use them.
+
+```bash
+cd packages/room
+pnpm install && pnpm build
+pnpm link --global        # `room` on PATH, running this checkout; rebuild after pulling
+```
+
+The first global link asks for `pnpm setup` once (it adds `PNPM_HOME` to your
+shell profile). For an install that does not follow the checkout, the way a
+pip install would not: `pnpm pack`, then `pnpm add -g ./local-room-0.0.1.tgz`.
+
+The claude, codex, and agy adapters ship with the room, so `room` finds
+them from anywhere. Seats with their own binaries (grok, hermes, pool) come
+from your PATH. agy's adapter is optional: its install script needs bun,
+and pnpm does not run it anyway; the room points it at your own `agy`.
+
 ## Commands
 
 ```bash
-npm run dev -- start claude grok hermes        # open a room; nothing joins by default
-npm run dev -- start --room-file rooms/review.toml
-npm run dev -- resume main            # reopen a saved room with the seats it had
-npm run dev -- acp claude grok        # serve the room to an editor over ACP on stdio
-npm run dev -- roster                 # the effective roster and where it came from
-npm run dev -- doctor                 # handshake every seat, print a table
-npm run dev -- doctor --deep          # also prove the permission round trip
-npm run dev -- doctor grok pool --json
-npm run dev -- spike claude "say hello and list the files here"
-npx tsx scripts/two-seats.ts grok     # do two seats of one harness stay separate?
-npx tsx scripts/smoke.ts claude hermes grok pool --editor grok   # phase 1 acceptance run
+room start claude grok hermes        # open a room; nothing joins by default
+room start --room-file rooms/review.toml
+room resume main                     # reopen a saved room with the seats it had
+room acp claude grok                 # serve the room to an editor over ACP on stdio
+room roster                          # the effective roster and where it came from
+room doctor                          # handshake every seat, print a table
+room doctor --deep                   # also prove the permission round trip
+room doctor grok pool --json
+room spike claude "say hello and list the files here"
+pnpm dev start claude grok           # from a checkout, without building
+pnpm exec tsx scripts/two-seats.ts grok     # do two seats of one harness stay separate?
+pnpm exec tsx scripts/smoke.ts claude hermes grok pool --editor grok   # phase 1 acceptance run
 ```
 
 ## In the room
@@ -161,15 +185,15 @@ branch. What changes from the REPL:
 - MCP servers the editor offers are ignored: seats bring their own.
 
 Zed, in `settings.json` (format from Zed's external-agents docs; not yet
-tried against Zed itself, the protocol side is tested with a real client
-over stdio). Use absolute paths: Zed may not have your shell's PATH.
+over stdio; first tried in Zed on 2026-09-25). Use an absolute path, from
+`which room`: Zed may not have your shell's PATH.
 
 ```json
 "agent_servers": {
   "room": {
     "type": "custom",
-    "command": "/path/to/joint-session/node_modules/.bin/tsx",
-    "args": ["/path/to/joint-session/packages/room/bin/room.ts", "acp", "claude", "grok"],
+    "command": "/Users/you/Library/pnpm/room",
+    "args": ["acp", "claude", "grok"],
     "env": {}
   }
 }
@@ -250,7 +274,7 @@ AGY_BIN = "/opt/homebrew/bin/agy"
 
 ## Tests without harnesses
 
-`npm test` runs 63 tests with no harness or login. Fifteen of them spawn
+`pnpm test` runs 63 tests with no harness or login. Fifteen of them spawn
 `test/fixtures/fake-agent.ts`, a real ACP agent with switches for each
 harness quirk (`--modes`, `--auto-edit`, `--no-ids`, `--resume`, `--load`,
 `--start-delay`, `--fail-session`), and `test/fixtures/fake-claude`, a CLI

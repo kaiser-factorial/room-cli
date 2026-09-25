@@ -21,7 +21,7 @@ import type {
   SeatInfo,
   ToolContentView,
 } from "./types.js";
-import { childEnv } from "../env.js";
+import { childEnv, resolveCommand } from "../env.js";
 
 const STDERR_TAIL_BYTES = 16384;
 
@@ -82,7 +82,8 @@ export class AcpSeat implements Seat {
 
   async start(opts: { timeoutMs?: number } = {}): Promise<SeatInfo> {
     const timeoutMs = opts.timeoutMs ?? 60_000;
-    const child = spawn(this.config.command, this.config.args ?? [], {
+    const cmd = resolveCommand(this.config.command, this.config.args ?? []);
+    const child = spawn(cmd.command, cmd.args, {
       env: childEnv(this.config.env),
       stdio: ["pipe", "pipe", "pipe"],
     });

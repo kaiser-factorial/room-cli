@@ -8,7 +8,7 @@ export interface SeatConfig {
   name: string;
   /** Transport. `acp` spawns an ACP agent over stdio; `cli` is the per-turn fallback (phase 2). */
   adapter: "acp" | "cli";
-  /** Executable to spawn. Resolved against PATH plus the workspace `.bin` dirs. */
+  /** Executable to spawn: an adapter the room ships with (e.g. `claude-agent-acp`), else found on PATH. */
   command: string;
   args?: string[];
   env?: Record<string, string>;
