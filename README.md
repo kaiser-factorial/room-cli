@@ -65,7 +65,10 @@ pnpm exec tsx scripts/smoke.ts claude hermes grok pool --editor grok   # phase 1
 
 Each seat is one ACP session kept alive for the room. On its turn a seat gets
 only what was said since its last turn, labeled `[name]: text`, plus the room
-preamble on its first turn. Your message starts a round in roster order; a
+preamble on its first turn. Before another seat's reply it also gets, from
+the room, that seat's tool calls for the turn, one line each with how they
+ended (`Edit calc.py (+2 -1)`, `` Execute `pytest -q` → 1 failed, 3 passed ``),
+so it can build on the work and not only on the summary. Your message starts a round in roster order; a
 leading `@seat` sends it to that seat only; an empty line runs another round
 with nothing new. A seat replying `[pass]` is recorded as a pass. When the
 working directory is a git repo the room checks out `room/<name>` and commits
@@ -86,8 +89,10 @@ grok> Changed names[i + 1] to names[i].
   [room] grok committed 60c2ccf: 1 file changed, 1 insertion(+), 1 deletion(-)
 ```
 
-Each speaker gets its own block and colour; room lines and tool activity
-are dimmed. Colour is off when stdout is not a terminal or `NO_COLOR` is
+Each speaker gets its own block and colour; room lines, tool activity,
+and seats' thinking are dimmed. Thinking streams as it comes, so a seat's
+loop (think, run, think, reply) is visible live; `/thoughts off` folds each
+run of it to one line. Colour is off when stdout is not a terminal or `NO_COLOR` is
 set. A commit note lists the files the turn changed.
 
 ### When a seat fails

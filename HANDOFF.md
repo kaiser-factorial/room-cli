@@ -106,8 +106,10 @@ external-agents docs (`"type": "custom"`).
 
 From grok, in a room with a rate-limited claude:
 1. Skip a seat that keeps failing: done (benching, see README).
-2. Show the next seat what the last turn changed: commit notes now list
-   files; showing diffs to other seats is open, and belongs with phase 6.
+2. Show the next seat what the last turn did: done. Each turn's tool calls
+   (`src/activity.ts`) reach the other seats from the room before its
+   reply, and commit notes list files. Full diffs to other seats: open,
+   with phase 6.
 3. Scratch turns the room does not commit: open.
 4. Wake the seat that started a background job when it finishes: open.
 
@@ -116,6 +118,9 @@ From Corina:
   together), so phase 6's worktrees need a way back to a shared tree, not
   only isolation for parallel rounds.
 - Blank lines and colour between speakers: done.
+- Watching a seat's loop live: done. The REPL used to drop thought chunks,
+  so a thinking seat (grok) looked silent and then answered all at once;
+  thoughts now stream, dimmed (`/thoughts off` folds them).
 - Seeing that someone is typing, and a richer layout: phase 5 (TUI).
 
 ## Known warts

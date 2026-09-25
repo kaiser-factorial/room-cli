@@ -17,6 +17,7 @@ const HELP = `commands:
   <text>                 say something; every seat answers in order
   @seat <text>           say something to one seat (several: @a @b)
   <empty line> or /next  another round with no new message
+  /thoughts [on|off]     stream seats' thinking, or fold it to one line
 ${COMMAND_HELP}
   /quit`;
 
@@ -118,6 +119,10 @@ export class ReplUI implements RoomUI {
   private tail = "\n\n";
   private readonly colours = new Map<string, (t: string) => string>();
   readonly style: ReturnType<typeof makeStyle>;
+  /** Stream seats' thinking (dimmed), or fold each run of it to one line. `/thoughts` toggles. */
+  showThoughts = true;
+  /** The seat whose folded "is thinking" line is already shown. */
+  private thinking?: string;
 
   constructor(
     private readonly lines: LineSource,
@@ -164,7 +169,12 @@ export class ReplUI implements RoomUI {
 
   seatEvent(seat: string, ev: SeatEvent): void {
     const { dim } = this.style;
-    const visible = ev.type === "text" || ev.type === "tool_call" || (ev.type === "tool_update" && (ev.content || ev.status === "failed"));
+    const visible =
+      ev.type === "text" ||
+      ev.type === "thought" ||
+      ev.type === "tool_call" ||
+      (ev.type === "tool_update" && (ev.content || ev.status === "failed"));
+    if (ev.type !== "thought") this.thinking = undefined;
     if (visible && this.lastSeat !== seat) {
       this.gap();
       this.lastSeat = seat;
@@ -181,6 +191,30 @@ export class ReplUI implements RoomUI {
         // Set before writing: a write that lands over the prompt resets it.
         this.lineStart = text.endsWith("\n");
         this.out.write(text);
+        break;
+      }
+      case "thought": {
+        const text = sanitizeForTerminal(ev.text);
+        if (!text) break;
+        if (!this.showThoughts) {
+          if (this.thinking !== seat) {
+            this.newline();
+            this.out.write(dim(`  · ${seat} is thinking…`) + "\n");
+            this.lineStart = true;
+            this.speaker = undefined;
+            this.thinking = seat;
+          }
+          break;
+        }
+        const header = `${seat}#thinking`;
+        if (this.speaker !== header) {
+          this.newline();
+          this.out.write(dim(`  ${seat} thinking: `));
+          this.speaker = header;
+        }
+        // Indented under its header, dimmed a chunk at a time; never ends a line itself.
+        this.lineStart = false;
+        this.out.write(dim(text.replace(/\n+/g, "\n    ")));
         break;
       }
       case "tool_call":
@@ -208,6 +242,8 @@ export class ReplUI implements RoomUI {
       case "stop":
         this.newline();
         this.speaker = undefined;
+        this.thinking = undefined;
+        this.lastSeat = undefined;
         break;
       default:
         break;
@@ -261,6 +297,12 @@ export async function runRepl(room: Room, lines: LineSource, ui: ReplUI): Promis
     if (text === "/quit" || text === "/q") break;
     if (text === "/help") {
       out.write(HELP + "\n");
+      continue;
+    }
+    if (text === "/thoughts" || text.startsWith("/thoughts ")) {
+      const arg = text.split(/\s+/)[1];
+      ui.showThoughts = arg === "on" ? true : arg === "off" ? false : !ui.showThoughts;
+      out.write(`  thinking: ${ui.showThoughts ? "streamed" : "folded to one line per turn"}\n`);
       continue;
     }
     if (text === "" || text === "/next") {

@@ -15,6 +15,8 @@ export interface Entry {
   from: string;
   kind: EntryKind;
   text: string;
+  /** The tool calls a seat made in the turn this entry closes, one line each. */
+  activity?: { seat: string; lines: string[] };
 }
 
 export class Transcript {
@@ -47,8 +49,9 @@ export class Transcript {
     return this.entries.length ? this.entries[this.entries.length - 1].id : 0;
   }
 
-  append(from: string, kind: EntryKind, text: string): Entry {
+  append(from: string, kind: EntryKind, text: string, activity?: Entry["activity"]): Entry {
     const entry: Entry = { id: this.last + 1, ts: new Date().toISOString(), from, kind, text };
+    if (activity?.lines.length) entry.activity = activity;
     this.entries.push(entry);
     appendFileSync(this.path, JSON.stringify(entry) + "\n");
     return entry;
@@ -83,6 +86,10 @@ export function neutralizeLabels(text: string): string {
 export function renderDelta(entries: Entry[], forSeat: string, trusted: string[] = []): string {
   const lines: string[] = [];
   for (const e of entries) {
+    // Another seat's work comes first, from the room: what it ran and changed, then what it said.
+    if (e.activity && e.activity.seat !== forSeat) {
+      lines.push(`[room]: ${e.activity.seat}'s tool calls this turn:\n${e.activity.lines.map((l) => `  - ${l}`).join("\n")}`);
+    }
     if (e.from === forSeat && (e.kind === "message" || e.kind === "pass")) continue;
     switch (e.kind) {
       case "message":

@@ -13,6 +13,7 @@ import { renderDelta, Transcript } from "../src/transcript.js";
  * A seat that replies with a script and records every prompt it received.
  * `FAIL:<text>|<error>` streams text, then the turn throws, the way a
  * harness streams "You've hit your session limit" and then errors.
+ * `TOOLS:<reply>` runs a command and edits a file before replying.
  */
 class FakeSeat implements Seat {
   readonly name: string;
@@ -35,6 +36,26 @@ class FakeSeat implements Seat {
     this.prompts.push(text);
     const next = this.replies.shift() ?? "[pass]";
     const reply = typeof next === "function" ? next(text) : next;
+    if (reply.startsWith("TOOLS:")) {
+      yield { type: "thought", text: "let me look" };
+      yield { type: "tool_call", id: "t1", title: "Execute `pytest -q`", kind: "execute", status: "in_progress" };
+      yield { type: "tool_update", id: "t1", status: "completed", content: [{ type: "text", text: "\n1 failed, 3 passed\n" }] };
+      yield {
+        type: "tool_call",
+        id: "t2",
+        title: "Edit calc.py",
+        kind: "edit",
+        status: "pending",
+        content: [{ type: "diff", path: "/w/calc.py", oldText: "a\nreturn a - b\nz", newText: "a\nreturn a + b\n# fixed\nz" }],
+        locations: ["/w/calc.py"],
+      };
+      yield { type: "tool_update", id: "t2", status: "completed" };
+      yield { type: "tool_call", id: "t3", title: "Write notes.md", kind: "edit", status: "pending" };
+      yield { type: "tool_update", id: "t3", status: "failed" };
+      yield { type: "text", text: reply.slice(6) };
+      yield { type: "stop", stopReason: "end_turn" };
+      return;
+    }
     if (reply.startsWith("FAIL:")) {
       const [text, error] = reply.slice(5).split("|");
       if (text) yield { type: "text", text };
@@ -205,6 +226,22 @@ describe("Room", () => {
     // b is told by the room, not by a.
     expect(fakes.get("b")!.prompts[0]).toContain("[room]: a's turn failed: Internal error");
     expect(fakes.get("b")!.prompts[0]).not.toContain("[a]:");
+  });
+
+  it("tells the next seat what the last one ran and changed, not only what it said", async () => {
+    const { room, fakes } = await open({ a: ["TOOLS:fixed the sign"], b: ["looks right"] });
+    await room.say("fix calc");
+    const a = room.transcript.entries.find((e) => e.from === "a")!;
+    expect(a.activity).toEqual({
+      seat: "a",
+      lines: ["Execute `pytest -q` → 1 failed, 3 passed", "Edit calc.py (+2 -1)", "Write notes.md (failed)"],
+    });
+    expect(fakes.get("b")!.prompts[0]).toContain(
+      "[room]: a's tool calls this turn:\n  - Execute `pytest -q` → 1 failed, 3 passed\n  - Edit calc.py (+2 -1)\n  - Write notes.md (failed)\n\n[a]: fixed the sign",
+    );
+    // A seat is not told its own tool calls: its harness has them.
+    await room.continueRound(["a"]);
+    expect(fakes.get("a")!.prompts[1]).not.toContain("tool calls");
   });
 
   it("benches a rate-limited seat at once, skips it in rounds and hand-offs, and @seat brings it back", async () => {

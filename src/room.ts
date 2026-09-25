@@ -14,6 +14,7 @@ import { createSeat } from "./seat/index.js";
 import { pickAskMode } from "./seat/modes.js";
 import type { PermissionDecider, PermissionRequestView, Seat, SeatConfig, SeatEvent } from "./seat/types.js";
 import { neutralizeLabels, renderDelta, Transcript, type Entry } from "./transcript.js";
+import { Activity } from "./activity.js";
 
 export interface RoomUI {
   seatEvent(seat: string, ev: SeatEvent): void;
@@ -76,6 +77,7 @@ interface TurnResult {
   text: string;
   stopReason: string;
   failure?: string;
+  activity: Activity;
 }
 
 export class Room {
@@ -430,13 +432,14 @@ export class Room {
   private async collectTurn(name: string, prompt: string, emit: (ev: SeatEvent) => void): Promise<TurnResult> {
     const seat = this.seats.get(name);
     if (!seat) throw new Error(`no such seat: ${name}`);
-    const result: TurnResult = { text: "", stopReason: "end_turn" };
+    const result: TurnResult = { text: "", stopReason: "end_turn", activity: new Activity() };
     this.active.add(name);
     try {
       await withTimeout(
         (async () => {
           for await (const ev of seat.prompt(prompt)) {
             emit(ev);
+            result.activity.observe(ev);
             if (ev.type === "text") result.text += ev.text;
             if (ev.type === "stop") result.stopReason = ev.stopReason;
           }
@@ -462,6 +465,7 @@ export class Room {
    */
   private recordTurn(name: string, r: TurnResult): Entry {
     const reply = r.text.trim();
+    const activity = { seat: name, lines: r.activity.lines() };
     const sid = this.seats.get(name)?.sessionId;
     if (sid) this.state.sessions[name] = sid;
     if (r.failure) {
@@ -471,12 +475,12 @@ export class Room {
       const partial = reply && !failure.includes(reply.replace(/\s+/g, " "))
         ? `\nWhat it wrote before failing:\n${neutralizeLabels(reply)}`
         : "";
-      return this.transcript.append("room", "system", `${name}'s turn failed: ${failure}${partial}`);
+      return this.transcript.append("room", "system", `${name}'s turn failed: ${failure}${partial}`, activity);
     }
     this.lastFailure.delete(name);
     return !reply || reply === PASS || r.stopReason === "cancelled"
-      ? this.transcript.append(name, "pass", "")
-      : this.transcript.append(name, "message", reply);
+      ? this.transcript.append(name, "pass", "", activity)
+      : this.transcript.append(name, "message", reply, activity);
   }
 
   /** Bench a seat whose failures will not clear by themselves. */
