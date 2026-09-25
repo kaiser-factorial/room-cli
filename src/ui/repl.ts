@@ -78,9 +78,13 @@ export class LineSource {
     });
   }
 
-  ask(prompt: string): Promise<string | null> {
-    // Lines typed ahead answer the human's own prompt, never a seat's question on top of it.
-    if (this.queue.length && this.stack.length === 0) {
+  /**
+   * `typedAhead`: whether a line typed earlier may answer. Yes for the
+   * human's own prompt; never for a seat's question, which must be answered
+   * by a line typed after it was shown.
+   */
+  ask(prompt: string, typedAhead = true): Promise<string | null> {
+    if (typedAhead && this.queue.length && this.stack.length === 0) {
       const line = this.queue.shift()!;
       this.out.write(`${prompt}${line}\n`);
       return Promise.resolve(line);
@@ -401,10 +405,11 @@ export class ReplUI implements RoomUI {
     this.out.write(`${this.style.bold("?")} ${this.seatName(req.seat)} wants: ${sanitizeForTerminal(req.title)}${req.kind ? ` [${req.kind}]` : ""}\n`);
     this.writeContent(req.content);
     for (;;) {
-      const a = (await this.lines.ask("  [a] allow  [A] always (room rule)  [d] deny  [c] cancel turn > "))?.trim();
+      const a = (await this.lines.ask("  [a] allow  [A] always (room rule)  [d] deny  [c] cancel turn > ", false))?.trim();
       this.inputEnded();
       if (a === null || a === undefined) return "deny"; // stdin closed
-      if (a === "a" || a === "") return "allow";
+      // No default: an Enter meant for something else must never approve.
+      if (a === "a") return "allow";
       if (a === "A") return "allow_always";
       if (a === "d") return "deny";
       if (a === "c") return "cancel";

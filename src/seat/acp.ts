@@ -11,6 +11,7 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { Readable, Transform, Writable } from "node:stream";
+import { StringDecoder } from "node:string_decoder";
 import * as acp from "@agentclientprotocol/sdk";
 import type {
   PermissionDecider,
@@ -71,6 +72,8 @@ export class AcpSeat implements Seat {
   private caps?: acp.InitializeResponse["agentCapabilities"];
   private readonly updates = new Chan<acp.SessionNotification>();
   private stderr = "";
+  /** Ends the reader of the turn before this one. */
+  private supersede?: () => void;
   private exitInfo?: { code: number | null; signal: NodeJS.Signals | null };
 
   constructor(
@@ -157,14 +160,17 @@ export class AcpSeat implements Seat {
     const caps = this.caps as Record<string, unknown> | undefined;
     const sessionCaps = (caps?.sessionCapabilities ?? {}) as Record<string, unknown>;
     try {
+      let res: { modes?: acp.SessionModeState | null; configOptions?: acp.NewSessionResponse["configOptions"] } | void;
       if (sessionCaps.resume) {
-        await this.agent().request(acp.methods.agent.session.resume, { sessionId, cwd, mcpServers: [] });
+        res = await this.agent().request(acp.methods.agent.session.resume, { sessionId, cwd, mcpServers: [] });
       } else if (caps?.loadSession) {
         this.sid = sessionId; // route the replay into the queue, then discard it
-        await this.agent().request(acp.methods.agent.session.load, { sessionId, cwd, mcpServers: [] });
+        res = await this.agent().request(acp.methods.agent.session.load, { sessionId, cwd, mcpServers: [] });
       } else {
         return false;
       }
+      // Its modes as it resumed, so the room can put it back in the asking one.
+      this.newSessionResponse = { sessionId, modes: res?.modes ?? null, configOptions: res?.configOptions ?? null } as acp.NewSessionResponse;
       this.sid = sessionId;
       this.updates.clear();
       return true;
@@ -236,6 +242,11 @@ export class AcpSeat implements Seat {
   async *prompt(text: string): AsyncIterable<SeatEvent> {
     const sid = this.sid;
     if (!sid) throw new Error(`${this.name}: no session`);
+    // A turn the room gave up on (it timed out, its harness never stopped) must not
+    // read this turn's updates: end its reader.
+    this.supersede?.();
+    let superseded = false;
+    const replaced = new Promise<void>((r) => (this.supersede = () => ((superseded = true), r())));
     this.updates.clear();
     let finished: { stopReason: string } | { error: Error } | undefined;
     const done = this.agent()
@@ -294,7 +305,8 @@ export class AcpSeat implements Seat {
     }.bind(this);
 
     for (;;) {
-      const n = await this.updates.nextOr(done);
+      const n = await this.updates.nextOr(Promise.race([done, replaced]));
+      if (superseded) return;
       if (n) {
         yield* map(n.update);
         continue;
@@ -363,6 +375,8 @@ export class AcpSeat implements Seat {
  */
 export function strayFilter(notice: (text: string) => void): Transform {
   let partial = "";
+  // A multi-byte character can straddle two chunks; decode across them.
+  const decoder = new StringDecoder("utf8");
   const seen = new Set<string>();
   const once = (key: string, text: string) => {
     if (seen.has(key)) return;
@@ -388,12 +402,13 @@ export function strayFilter(notice: (text: string) => void): Transform {
   };
   return new Transform({
     transform(chunk: Buffer, _enc, done) {
-      const lines = (partial + chunk.toString("utf8")).split("\n");
+      const lines = (partial + decoder.write(chunk)).split("\n");
       partial = lines.pop()!;
       const out = lines.filter(keep);
       done(null, out.length ? out.join("\n") + "\n" : undefined);
     },
     flush(done) {
+      partial += decoder.end();
       done(null, partial && keep(partial) ? partial : undefined);
     },
   });

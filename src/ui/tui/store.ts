@@ -141,15 +141,22 @@ export class TuiStore extends EventEmitter {
   /** A seat's permission question: queued, answered one at a time from the question bar. */
   ask(req: PermissionRequestView): Promise<HumanChoice> {
     return new Promise((resolve) => {
-      this.asks.push({
+      let answered = false;
+      const ask: Ask = {
         req,
         preview: renderToolContent(req.content, "  ").map((l) => sanitizeForTerminal(l)),
+        // Once only, and only this question: a second keypress before the redraw must not
+        // take the next seat's question off the queue unanswered.
         resolve: (choice) => {
-          this.asks.shift();
+          if (answered) return;
+          answered = true;
+          const i = this.asks.indexOf(ask);
+          if (i >= 0) this.asks.splice(i, 1);
           resolve(choice);
           this.changed();
         },
-      });
+      };
+      this.asks.push(ask);
       this.changed();
     });
   }

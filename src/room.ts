@@ -451,18 +451,20 @@ export class Room {
   }
 
   /** Cancel a seat's background work. Its reply so far is recorded; its desk keeps the work. */
-  async stopBackground(name: string): Promise<boolean> {
+  async stopBackground(name: string, graceMs = Infinity): Promise<boolean> {
     const run = this.background.get(name);
     if (!run) return false;
     this.stopRequests.add(name);
-    // The turn may not have reached the seat yet (its desk syncs first): cancel until it ends.
+    // The turn may not have reached the seat yet (its desk syncs first): cancel until it ends,
+    // or until the grace runs out (shutting down: the seat's process is stopped next).
     let done = false;
     void run.finally(() => (done = true));
-    while (!done) {
+    const deadline = Date.now() + graceMs;
+    while (!done && Date.now() < deadline) {
       await this.seats.get(name)?.cancel().catch(() => undefined);
       await Promise.race([run, new Promise((r) => setTimeout(r, 250))]);
     }
-    this.stopRequests.delete(name);
+    if (done) this.stopRequests.delete(name);
     return true;
   }
 
@@ -496,6 +498,20 @@ export class Room {
     if (!this.stopped && entry.kind === "message") this.maybeBackground(name, entry.text);
   }
 
+  /**
+   * How far a seat has read after a turn: what it was shown, plus its own
+   * entries. Anything another seat (a background one) added during the turn
+   * is still news to it.
+   */
+  private seenThrough(name: string, snapshot: number): number {
+    let seen = snapshot;
+    for (const e of this.transcript.since(snapshot)) {
+      if (e.from !== name) break;
+      seen = e.id;
+    }
+    return seen;
+  }
+
   /** A reply ending `[background] <task>` sends its seat on working. */
   private maybeBackground(name: string, text: string): void {
     const task = backgroundTask(text);
@@ -525,7 +541,9 @@ export class Room {
         } else {
           const seat = this.scheduler.shift()!;
           // Anything the human changed between turns is theirs, not the next seat's.
-          if (this.useGit) await this.commitHumanChanges(`changes before ${seat}'s turn`);
+          // Under the trunk lock: a background seat may be merging into this same tree.
+          if (this.useGit) await this.withTrunk(() => this.commitHumanChanges(`changes before ${seat}'s turn`));
+          if (this.cancelRequested) break;
           const entry = await this.runTurn(seat);
           if (entry?.kind === "message" && !this.cancelRequested) {
             this.maybeBackground(seat, entry.text);
@@ -659,10 +677,13 @@ export class Room {
     if (!seat) throw new Error(`no such seat: ${name}`);
     const result: TurnResult = { text: "", stopReason: "end_turn", activity: new Activity() };
     this.active.add(name);
+    // Once the turn is over (timed out included), anything its reader still yields is dropped.
+    let open = true;
     try {
       await withTimeout(
         (async () => {
           for await (const ev of seat.prompt(prompt)) {
+            if (!open) return;
             emit(ev);
             result.activity.observe(ev);
             if (ev.type === "text") result.text += ev.text;
@@ -676,6 +697,7 @@ export class Room {
       await seat.cancel();
       result.failure = describeError(err);
     } finally {
+      open = false;
       this.active.delete(name);
     }
     return result;
@@ -726,12 +748,14 @@ export class Room {
     const { ui } = this.opts;
     if (!this.seats.has(name)) throw new Error(`no such seat: ${name}`);
     if (this.useDesks) await this.syncDesk(name);
+    // A cancel that came during the git work above: the seat never starts.
+    if (this.cancelRequested) return undefined;
     const prompt = this.buildPrompt(name, false);
+    const snapshot = this.transcript.last;
     const headBefore = this.useGit ? await headSha(this.opts.cwd).catch(() => undefined) : undefined;
     const result = await this.collectTurn(name, prompt, (ev) => ui.seatEvent(name, ev));
     const entry = this.recordTurn(name, result);
-    // The seat has now seen everything up to and including its own reply.
-    this.state.cursors[name] = this.transcript.last;
+    this.state.cursors[name] = this.seenThrough(name, snapshot);
 
     if (this.useDesks) {
       await this.closeTurn(name, entry, result.text);
@@ -914,8 +938,11 @@ export class Room {
 
   async stop(): Promise<void> {
     this.stopped = true;
-    await Promise.all([...this.background.keys()].map((n) => this.stopBackground(n)));
+    const running = [...this.background.values()];
+    // A harness that ignores cancel must not hold the room open: a short grace, then stop its process.
+    await Promise.all([...this.background.keys()].map((n) => this.stopBackground(n, 3000)));
     await Promise.all([...this.seats.values()].map((s) => s.stop().catch(() => undefined)));
+    await Promise.race([Promise.allSettled(running), new Promise((r) => setTimeout(r, 2000))]);
     this.saveState();
   }
 

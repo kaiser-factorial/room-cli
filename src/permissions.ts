@@ -29,8 +29,11 @@ export function matches(pattern: string, value: string): boolean {
   return re.test(value);
 }
 
+/** ACP's tool kinds. A rule naming one matches that kind only, never a title that says the word. */
+export const TOOL_KINDS = new Set(["read", "edit", "delete", "move", "search", "execute", "think", "fetch", "switch_mode", "other"]);
+
 export function hit(patterns: string[], req: { kind?: string; title: string }): boolean {
-  return patterns.some((p) => (req.kind && matches(p, req.kind)) || matches(p, req.title));
+  return patterns.some((p) => (TOOL_KINDS.has(p.toLowerCase()) ? req.kind?.toLowerCase() === p.toLowerCase() : matches(p, req.title)));
 }
 
 export function decide(policy: SeatPolicy | undefined, req: { kind?: string; title: string }): Action {
@@ -88,7 +91,10 @@ export function makeDecider(hooks: DeciderHooks): PermissionDecider {
       case "allow":
         return optionFor(req, "allow");
       case "allow_always":
-        hooks.onAllowAlways(req.seat, req.kind ?? req.title);
+        // A rule from a kind is safe. One from a title is not: the seat wrote the title,
+        // and a `*` in it would be a wildcard. Allow this once and say so.
+        if (req.kind && TOOL_KINDS.has(req.kind)) hooks.onAllowAlways(req.seat, req.kind);
+        else hooks.log?.(`[${req.seat}] allowed once: "${req.title}" has no tool kind to make a rule from; /perm ${req.seat} allow <pattern> makes one`);
         return optionFor(req, "allow");
       case "deny":
         return optionFor(req, "deny");
