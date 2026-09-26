@@ -20,6 +20,8 @@ export interface RoomTools {
   status(seat: string): string;
   show(seat: string, args: { id?: number; from?: string; last?: number }): string;
   diff(seat: string, args: { seat?: string }): Promise<string>;
+  skills(seat: string): string;
+  skill(seat: string, name: string): string;
 }
 
 /** How a seat reaches the server: over HTTP, or through the stdio bridge. */
@@ -67,6 +69,17 @@ export const TOOLS = [
     description:
       "What a seat has changed and not landed yet (default: you, including uncommitted work). Without desks: the working directory's uncommitted changes.",
     inputSchema: { type: "object", properties: { seat: { type: "string" } } },
+  },
+  {
+    name: "skills",
+    description:
+      "Skills set up in any seat's harness on this machine (Claude, Codex, Gemini, Hermes, shared), offered to every seat: name, where it came from, and what it is for.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "skill",
+    description: "One skill in full: its SKILL.md and the files beside it, to follow as its instructions say.",
+    inputSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] },
   },
 ];
 
@@ -181,6 +194,13 @@ export class RoomMcp {
         return this.tools.show(seat, { id: num(a.id), from: str(a.from), last: num(a.last) });
       case "diff":
         return this.tools.diff(seat, { seat: str(a.seat) });
+      case "skills":
+        return this.tools.skills(seat);
+      case "skill": {
+        const name = str(a.name);
+        if (!name) throw new Error("skill needs a name (the skills tool lists them)");
+        return this.tools.skill(seat, name);
+      }
       default:
         throw new Error(`no tool ${name}`);
     }

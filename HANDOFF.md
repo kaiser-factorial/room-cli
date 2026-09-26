@@ -23,8 +23,9 @@ Design", https://claude.ai/code/artifact/8624261e-8ed2-45ea-ad01-d8b06166e1e1
 | threads step 2: room MCP server (`inbox`, `post`, `status`, `show`, `diff`) | done; HTTP for Claude, stdio bridge otherwise; not yet tried with a live harness |
 | threads step 3: urgent interrupts polish, posting rate limits | done |
 | moderator: an OpenRouter model (or the human) decides when a limit trips | done; not tried against OpenRouter live |
+| menu (`room`): defaults, moderator key, skills & MCP sharing, past rooms, archive | done; checked in a pty |
 
-Tests: `pnpm install && pnpm test` in `packages/room`, 131 tests, run
+Tests: `pnpm install && pnpm test` in `packages/room`, 142 tests, run
 anywhere with Node 22+. The room is no longer in the root's npm workspace:
 it has its own `pnpm-lock.yaml` (pnpm 11, build scripts allowed in
 `pnpm-workspace.yaml`), its own `vitest.config.ts`, and a `room` job in CI
@@ -92,6 +93,19 @@ seats through `modNotes`. `post` past its per-turn count asks too (not
 past the gap). Also fixed here: a parallel batch is recorded and landed in
 roster order again (`beginTurn`'s `order`), and every seat in a parallel
 round is shown as alongside, so the editor never interleaves them.
+
+## The menu
+
+`src/ui/menu/menu.tsx` (Ink, one component, screens as row lists with
+enter/space/←→ handlers) over `settings.ts` (config.toml, secrets.toml
+0600, `applySecrets` at CLI start), `discover.ts` (skills and MCP servers
+from each harness's config; `harnessOf` so a server is not handed back to
+its own harness), and `history.ts` (`.room/*` plus the `rooms.jsonl`
+index; `archiveRoom` gzips and drops worktrees; `Transcript.open`
+unpacks a `.gz`). `bin/room.ts`: `menu` is the default command; `runRoom`
+merges saved defaults under flags (human, seats, roles, personas, wake,
+cap, tui, moderator, skills, shareMcp). vitest points `ROOM_CONFIG_DIR`
+at a scratch dir so tests never touch the real config.
 
 ## Emulating the harnesses in the cloud
 

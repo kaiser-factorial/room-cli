@@ -44,6 +44,56 @@ them from anywhere. Seats with their own binaries (grok, hermes, pool) come
 from your PATH. agy's adapter is optional: its install script needs bun,
 and pnpm does not run it anyway; the room points it at your own `agy`.
 
+## The menu
+
+`room` on its own opens a menu (also `room menu`). The first time, it
+walks you through your defaults; after that it opens on home:
+
+- **Start a room** with your default seats, in the TUI (or the REPL, if
+  you chose it).
+- **Past rooms**, from this directory and every other place you have run
+  one: when, who, how big, the last thing said. Read a transcript, resume
+  it, or archive it.
+- **Room defaults**: your name; who joins (space); each seat's role (←→,
+  the web app's presets) and persona (enter, a sentence or two of who it
+  is); what an untagged message wakes; the wake cap; TUI or REPL.
+- **Moderator**: auto, you, off, or an OpenRouter model id, and your
+  OpenRouter key.
+- **Skills & MCP**: every skill and MCP server the harnesses here have set
+  up, and what to share.
+
+Defaults live in `~/.config/room/config.toml` (edit it by hand if you
+like); the key in `secrets.toml` beside it, readable only by you. An
+`OPENROUTER_API_KEY` in the environment wins. `room start` with no seats
+uses your defaults; flags still override them.
+
+### Shared skills and MCP servers
+
+The room looks in `~/.claude/skills` (and plugin skills), `~/.codex/skills`,
+`~/.gemini/skills`, `~/.hermes/skills`, `~/.agents/skills`, and the
+project's `.claude/`, `.codex/`, `.agents/` skill folders; and for MCP
+servers in `~/.claude.json`, `.mcp.json`, `~/.codex/config.toml`, and
+`~/.gemini/settings.json`.
+
+- **Skills** are shared with every seat by default, through the room's own
+  MCP server: `skills` lists them, `skill <name>` gives one in full with the
+  paths of its files. So a skill set up only for Claude is usable by grok.
+- **MCP servers** you tick are handed to every seat at session start, except
+  the harness whose config has it (it loads it itself).
+
+### Where rooms are kept, and what they cost
+
+Each room is `.room/<name>/` in the directory it ran in: `state.json`,
+`transcript.jsonl`, and with git, `desks/` (a worktree per seat).
+`~/.config/room/rooms.jsonl` indexes them so the menu can list them all.
+
+A transcript is small: text only, a few KB a turn, since tool calls are
+kept as one-line steps and never their output. The desks are what grow,
+each a checkout of the repo. **Archive** (in Past rooms) gzips the
+transcript (text compresses ~10×) and removes the desk worktrees; their
+branches stay in git, so no seat's work is lost, and `room resume` unpacks
+the transcript and recreates the desks.
+
 ## The TUI
 
 `room start claude grok --tui` (also on `resume`) opens the room in a

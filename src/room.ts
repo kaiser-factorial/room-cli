@@ -16,6 +16,8 @@ import type { PermissionDecider, PermissionRequestView, Seat, SeatConfig, SeatEv
 import { neutralizeLabels, renderDelta, Transcript, type Entry } from "./transcript.js";
 import { Activity } from "./activity.js";
 import { RoomMcp, type RoomTools } from "./server/mcp.js";
+import { recordRoom } from "./history.js";
+import { harnessOf, readSkill, type McpServerEntry, type Skill } from "./discover.js";
 import { moderatorFor, type LimitCase, type Moderator, type Verdict } from "./moderator.js";
 
 export interface RoomUI {
@@ -66,6 +68,10 @@ export interface RoomOptions {
   postGapMs?: number;
   /** Decides when a limit trips (cap, echo, post limit). Without one, limits just hold. */
   moderator?: Moderator;
+  /** Skills found in the harnesses' configs, offered to every seat through the `skills` tool. */
+  skills?: Skill[];
+  /** MCP servers from the harnesses' configs to hand to every seat (not back to the harness that has it). */
+  shareMcp?: McpServerEntry[];
   /** Serve the room's MCP tools (inbox, post, status, show, diff) to seats that take them. Default: true. */
   tools?: boolean;
   /** Seat factory, for tests. */
@@ -404,6 +410,7 @@ export class Room {
     this.state.seats = this.seatNames;
     this.saveState();
     if (this.state.auto) ui.status("auto: tool calls run without asking, except your deny and ask rules (/auto off)");
+    recordRoom(this.opts.cwd, this.opts.name);
     if (this.transcript.entries.length === 0) {
       this.transcript.append(
         "room",
@@ -436,7 +443,8 @@ export class Room {
         this.seats.set(config.name, seat);
         const info = await seat.start();
         if (this.mcp && seat.useMcp) {
-          seat.useMcp(this.mcp.endpoint(config.name));
+          const mine = harnessOf(config.command);
+          seat.useMcp(this.mcp.endpoint(config.name), (this.opts.shareMcp ?? []).filter((e) => e.harness !== mine));
           this.withTools.add(config.name);
         }
         // A reopened room: reattach to the seat's saved session, or start fresh and replay.
@@ -948,6 +956,7 @@ export class Room {
           branch: this.state.branch,
           desk: this.state.desks?.[name],
           tools: this.withTools.has(name),
+          skills: this.withTools.has(name) ? (this.opts.skills?.length ?? 0) : 0,
         }) + "\n\n---\n\n"
       : "";
     const note = !parallel
@@ -1219,6 +1228,16 @@ export class Room {
       status: (seat) => this.statusFor(seat),
       show: (seat, args) => this.show(args),
       diff: (seat, args) => this.diffFor(seat, args.seat ?? seat),
+      skills: () => {
+        const all = this.opts.skills ?? [];
+        if (!all.length) return "No skills are shared in this room.";
+        return all.map((k) => `- ${k.name} (${k.harness}): ${k.description || "no description"}`).join("\n");
+      },
+      skill: (_seat, name) => {
+        const k = (this.opts.skills ?? []).find((x) => x.name.toLowerCase() === name.toLowerCase());
+        if (!k) throw new Error(`no skill ${name}; the skills tool lists them`);
+        return readSkill(k);
+      },
     };
   }
 

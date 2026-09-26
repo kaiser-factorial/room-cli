@@ -17,12 +17,19 @@ import { EXIT } from "../src/exit-codes.js";
 import { Room } from "../src/room.js";
 import { AcpSeat } from "../src/seat/acp.js";
 import type { PermissionRequestView, SeatConfig } from "../src/seat/types.js";
-import { rolePrompt } from "../src/preamble.js";
+import { roleList, rolePrompt } from "../src/preamble.js";
 import { serveAcp } from "../src/server/acp.js";
 import { runTui, TuiUI } from "../src/ui/tui/run.js";
 import { TuiStore } from "../src/ui/tui/store.js";
 import { LineSource, ReplUI, runRepl } from "../src/ui/repl.js";
+import { render } from "ink";
+import { createElement } from "react";
+import { findMcpServers, findSkills } from "../src/discover.js";
+import { archiveRoom, listRooms, readTranscript } from "../src/history.js";
+import { applySecrets, hasSettings, loadSecrets, loadSettings, saveOpenRouterKey, saveSettings, type Settings } from "../src/settings.js";
+import { Menu, type MenuContext, type MenuResult } from "../src/ui/menu/menu.js";
 
+applySecrets();
 const program = new Command();
 program
   .name("room")
@@ -121,7 +128,7 @@ program
 
 interface StartOptions {
   cwd: string;
-  human: string;
+  human?: string;
   roomFile?: string;
   git: boolean;
   desks: boolean;
@@ -131,14 +138,14 @@ interface StartOptions {
   role?: string[];
   wake?: string;
   cap?: string;
-  moderator: string;
+  moderator?: string;
   turnTimeout: string;
 }
 
 function roomOptions(cmd: Command): Command {
   return cmd
     .option("--cwd <dir>", "working directory the seats share", process.cwd())
-    .option("--human <name>", "your name in the transcript", "Corina")
+    .option("--human <name>", "your name in the transcript (default: yours from the menu, else Corina)")
     .option("--room-file <file>", "TOML with seats, modes, roles, and policy")
     .option("--no-git", "do not branch or commit per turn")
     .option("--no-desks", "seats share one working directory instead of a worktree each")
@@ -146,7 +153,7 @@ function roomOptions(cmd: Command): Command {
     .option("--auto", "tool calls run without asking you, except deny and ask rules")
     .option("--wake <who>", "who an untagged message wakes: last (whoever spoke last) or all")
     .option("--cap <n>", "seat-to-seat wakes per thread before the room pauses it (a number, or off)")
-    .option("--moderator <who>", "who decides when a limit trips: auto (OpenRouter if OPENROUTER_API_KEY, else you), you, off, or an OpenRouter model id", "auto")
+    .option("--moderator <who>", "who decides when a limit trips: auto (OpenRouter if OPENROUTER_API_KEY, else you), you, off, or an OpenRouter model id")
     .option("--tui", "full-screen terminal UI: live seat boxes, a status bar, and the input always open")
     .option("--role <seat=role...>", "give seats roles from the web app's presets, e.g. --role grok=critic claude=implementer")
     .option("--turn-timeout <seconds>", "per-turn timeout", "600");
@@ -191,9 +198,10 @@ function withRoles(seats: SeatConfig[], roles: string[] | undefined): SeatConfig
 function lineup(names: string[], roomFile: string | undefined, fallback: string[] = []): SeatConfig[] {
   const roster = withConfig(() => loadRoster(program.opts().roster));
   const file = roomFile ? withConfig(() => loadRoomFile(roomFile)) : undefined;
-  const wanted = names.length ? names : file?.seats?.length ? file.seats : fallback;
+  const saved = withConfig(() => loadSettings()).seats ?? [];
+  const wanted = names.length ? names : file?.seats?.length ? file.seats : fallback.length ? fallback : saved;
   if (wanted.length === 0) {
-    console.error(`room: name the seats to open, e.g. room start claude grok (roster has: ${roster.seats.map((s) => s.name).join(", ")})`);
+    console.error(`room: name the seats to open, e.g. room start claude grok, or set defaults with: room menu (roster has: ${roster.seats.map((s) => s.name).join(", ")})`);
     process.exit(EXIT.CONFIG);
   }
   const seats = withConfig(() => pickSeats(roster, wanted));
@@ -202,25 +210,32 @@ function lineup(names: string[], roomFile: string | undefined, fallback: string[
 
 async function runRoom(name: string, lineupSeats: SeatConfig[], opts: StartOptions): Promise<void> {
   const cwd = resolve(opts.cwd);
-  const seats = withRoles(lineupSeats, opts.role);
-  if (opts.tui) {
+  const saved = withConfig(() => loadSettings());
+  const seats = withPersonas(withRoles(withRoles(lineupSeats, settingRoles(lineupSeats, saved)), opts.role), saved);
+  const tui = opts.tui ?? saved.tui ?? false;
+  const found = findMcpServers({ cwd });
+  const base = {
+    name,
+    cwd,
+    seats,
+    human: opts.human ?? saved.human ?? "Corina",
+    git: opts.git ? undefined : false,
+    desks: opts.desks,
+    auto: opts.auto,
+    wake: wakeOpt(opts.wake) ?? saved.wake,
+    cap: capOpt(opts.cap) ?? (saved.cap === "off" ? null : saved.cap),
+    mode: opts.parallel ? ("parallel" as const) : undefined,
+    turnTimeoutMs: Number(opts.turnTimeout) * 1000,
+    skills: saved.shareSkills === false ? [] : findSkills({ cwd }),
+    shareMcp: found.filter((m) => saved.shareMcp?.includes(m.name)),
+  };
+  const moderator = opts.moderator ?? saved.moderator ?? "auto";
+  if (tui) {
     const store = new TuiStore();
-    const room = await Room.open({
-      name,
-      cwd,
-      seats,
-      human: opts.human,
-      ui: new TuiUI(store),
-      git: opts.git ? undefined : false,
-      desks: opts.desks,
-      auto: opts.auto,
-      wake: wakeOpt(opts.wake),
-      cap: capOpt(opts.cap),
-      mode: opts.parallel ? "parallel" : undefined,
-      turnTimeoutMs: Number(opts.turnTimeout) * 1000,
-    });
-    withConfig(() => room.useModerator(opts.moderator));
+    const room = await Room.open({ ...base, ui: new TuiUI(store) });
+    withConfig(() => room.useModerator(moderator));
     store.status(`room "${name}" with ${seats.map((s) => s.name).join(", ")} in ${cwd}. /help for commands, Ctrl+C to cancel a round.`);
+    store.status(`moderator: ${room.moderator?.label ?? "off"}; ${base.skills.length} skills shared`);
     try {
       await runTui(room, store, room.start());
     } finally {
@@ -231,22 +246,9 @@ async function runRoom(name: string, lineupSeats: SeatConfig[], opts: StartOptio
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const lines = new LineSource(rl);
   const ui = new ReplUI(lines);
-  const room = await Room.open({
-    name,
-    cwd,
-    seats,
-    human: opts.human,
-    ui,
-    git: opts.git ? undefined : false,
-    desks: opts.desks,
-    auto: opts.auto,
-    wake: wakeOpt(opts.wake),
-    cap: capOpt(opts.cap),
-    mode: opts.parallel ? "parallel" : undefined,
-    turnTimeoutMs: Number(opts.turnTimeout) * 1000,
-  });
-  withConfig(() => room.useModerator(opts.moderator));
-  ui.status(`moderator: ${room.moderator?.label ?? "off"}`);
+  const room = await Room.open({ ...base, ui });
+  withConfig(() => room.useModerator(moderator));
+  ui.status(`moderator: ${room.moderator?.label ?? "off"}; ${base.skills.length} skills shared`);
   ui.status(`starting ${seats.map((s) => s.name).join(", ")} in ${cwd}`);
   try {
     await room.start();
@@ -256,6 +258,61 @@ async function runRoom(name: string, lineupSeats: SeatConfig[], opts: StartOptio
     await room.stop();
   }
 }
+
+/** Your saved roles as `seat=role` flags, under anything given on the command line. */
+function settingRoles(seats: SeatConfig[], saved: Settings): string[] {
+  return Object.entries(saved.roles ?? {})
+    .filter(([seat]) => seats.some((s) => s.name === seat))
+    .map(([seat, role]) => `${seat}=${role}`);
+}
+
+/** Your saved personas, after whatever persona the roster gives a seat. */
+function withPersonas(seats: SeatConfig[], saved: Settings): SeatConfig[] {
+  return seats.map((s) => {
+    const p = saved.personas?.[s.name];
+    return p ? { ...s, prompt: [s.prompt, p].filter(Boolean).join("\n\n") } : s;
+  });
+}
+
+async function runMenu(): Promise<void> {
+  const cwd = process.cwd();
+  const roster = withConfig(() => loadRoster(program.opts().roster));
+  let result = { action: "quit" } as MenuResult;
+  const ctx: MenuContext = {
+    roster: roster.seats,
+    roles: roleList(),
+    settings: withConfig(() => loadSettings()),
+    firstRun: !hasSettings(),
+    openrouterKey: process.env.OPENROUTER_API_KEY || loadSecrets().openrouterApiKey,
+    skills: findSkills({ cwd }),
+    mcp: findMcpServers({ cwd }),
+    rooms: () => listRooms(cwd, { everywhere: true }),
+    transcript: readTranscript,
+    archive: archiveRoom,
+    save: (s) => void saveSettings(s),
+    saveKey: (k) => {
+      saveOpenRouterKey(k);
+      if (k) process.env.OPENROUTER_API_KEY = k;
+      else delete process.env.OPENROUTER_API_KEY;
+    },
+    cwd,
+  };
+  const app = render(createElement(Menu, { ctx, onDone: (r: MenuResult) => (result = r) }));
+  await app.waitUntilExit();
+  const defaults: StartOptions = { cwd, git: true, desks: true, turnTimeout: "600", tui: loadSettings().tui ?? true };
+  if (result.action === "start") {
+    const seats = lineup([], undefined, loadSettings().seats ?? []);
+    await runRoom(Room.freshName(cwd), seats, defaults);
+  } else if (result.action === "resume") {
+    const r = result;
+    await runRoom(r.name, lineup([], undefined, Room.savedSeats(r.cwd, r.name)), { ...defaults, cwd: r.cwd });
+  }
+}
+
+program
+  .command("menu", { isDefault: true })
+  .description("The menu: start a room with your defaults, past rooms, defaults, moderator, skills and MCP (also: room with no command)")
+  .action(runMenu);
 
 roomOptions(
   program
@@ -307,9 +364,12 @@ program
       Writable.toWeb(process.stdout) as WritableStream<Uint8Array>,
       Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>,
     );
+    const saved = withConfig(() => loadSettings());
     const server = serveAcp(stream, {
-      seats,
-      human: opts.human,
+      seats: withPersonas(withRoles(seats, settingRoles(seats, saved)), saved),
+      human: opts.human ?? saved.human ?? "Corina",
+      skills: saved.shareSkills === false ? [] : findSkills(),
+      shareMcp: findMcpServers().filter((m) => saved.shareMcp?.includes(m.name)),
       git: opts.git ? undefined : false,
       desks: opts.desks,
       auto: opts.auto,

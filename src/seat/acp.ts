@@ -24,6 +24,7 @@ import type {
 } from "./types.js";
 import { childEnv, resolveCommand } from "../env.js";
 import type { McpEndpoint } from "../server/mcp.js";
+import type { McpServerEntry } from "../discover.js";
 
 const STDERR_TAIL_BYTES = 16384;
 
@@ -78,6 +79,8 @@ export class AcpSeat implements Seat {
   private exitInfo?: { code: number | null; signal: NodeJS.Signals | null };
   /** The room's MCP server, handed to every session this seat opens. */
   private roomMcp?: McpEndpoint;
+  /** Servers from other harnesses' configs, shared with every seat. */
+  private extraMcp: McpServerEntry[] = [];
 
   constructor(
     readonly config: SeatConfig,
@@ -147,8 +150,9 @@ export class AcpSeat implements Seat {
   }
 
   /** Give this seat's sessions the room's tools. Set before newSession/resumeSession. */
-  useMcp(endpoint: McpEndpoint): void {
+  useMcp(endpoint: McpEndpoint, extra: McpServerEntry[] = []): void {
     this.roomMcp = endpoint;
+    this.extraMcp = extra;
   }
 
   /** The room's server as this agent can take it: HTTP when advertised, else the stdio bridge. */
@@ -156,9 +160,17 @@ export class AcpSeat implements Seat {
     const m = this.roomMcp;
     if (!m) return [];
     const http = (this.caps as { mcpCapabilities?: { http?: boolean } } | undefined)?.mcpCapabilities?.http;
-    return http
+    const servers: acp.McpServer[] = http
       ? [{ type: "http", name: m.name, url: m.url, headers: [] }]
       : [{ name: m.name, command: m.bridge.command, args: m.bridge.args, env: [] }];
+    for (const e of this.extraMcp) {
+      if (e.command) {
+        servers.push({ name: e.name, command: e.command, args: e.args ?? [], env: Object.entries(e.env ?? {}).map(([name, value]) => ({ name, value })) });
+      } else if (e.url && http) {
+        servers.push({ type: "http", name: e.name, url: e.url, headers: [] });
+      }
+    }
+    return servers;
   }
 
   async newSession(cwd: string): Promise<string> {

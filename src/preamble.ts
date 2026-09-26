@@ -37,6 +37,8 @@ export interface PreambleOptions {
   desk?: { path: string; branch: string };
   /** Whether the seat has the room's MCP tools. */
   tools?: boolean;
+  /** How many skills the room shares through its `skills` tool. */
+  skills?: number;
 }
 
 /** The web app's role presets, as `/role` lists them. */
@@ -81,7 +83,10 @@ export function buildPreamble(o: PreambleOptions): string {
     perms,
     git,
     o.tools
-      ? `Room tools: you have an MCP server named \`room\`. While you work, \`inbox\` shows what others posted since you last read (worth a look between long steps, in case someone redirects you), \`post\` puts a short message in the room now (progress, a question, a heads-up; tag with @name to wake someone), \`status\` says who is busy, \`show\` gives a message in full with its tool calls, and \`diff\` shows a seat's work not landed yet. Post sparingly: your final reply is posted anyway.`
+      ? `Room tools: you have an MCP server named \`room\`. While you work, \`inbox\` shows what others posted since you last read (worth a look between long steps, in case someone redirects you), \`post\` puts a short message in the room now (progress, a question, a heads-up; tag with @name to wake someone), \`status\` says who is busy, \`show\` gives a message in full with its tool calls, and \`diff\` shows a seat's work not landed yet. Post sparingly: your final reply is posted anyway.` +
+        (o.skills
+          ? ` The room also shares ${o.skills} skill${o.skills === 1 ? "" : "s"} set up across the seats' harnesses: \`skills\` lists them, \`skill\` gives one in full. Check it before building something a skill may already cover.`
+          : "")
       : "",
     `Keep replies short unless you are doing work. When you change files, say what you changed and where.`,
   ]

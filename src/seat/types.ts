@@ -111,5 +111,8 @@ export interface Seat {
   readonly modes?: { current?: string; available: Array<{ id: string; name: string }> };
   setMode?(modeId: string): Promise<void>;
   /** Hand the room's MCP server (inbox, post, ...) to the sessions this seat opens. */
-  useMcp?(endpoint: { name: string; url: string; bridge: { command: string; args: string[] } }): void;
+  useMcp?(
+    endpoint: { name: string; url: string; bridge: { command: string; args: string[] } },
+    extra?: Array<{ name: string; command?: string; args?: string[]; env?: Record<string, string>; url?: string }>,
+  ): void;
 }

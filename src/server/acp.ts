@@ -15,6 +15,7 @@
  * `session/resume` reopen `.room/<name>/` and reattach the seats. stdout is
  * the wire: nothing else may write to it.
  */
+import type { McpServerEntry, Skill } from "../discover.js";
 import * as acp from "@agentclientprotocol/sdk";
 import { COMMAND_HELP, runCommand } from "../commands.js";
 import type { HumanChoice } from "../permissions.js";
@@ -27,6 +28,9 @@ import { sanitizeForTerminal } from "../ui/repl.js";
 export interface AcpServerOptions {
   seats: SeatConfig[];
   human: string;
+  /** Skills and MCP servers shared with every seat (see the menu's Skills & MCP). */
+  skills?: Skill[];
+  shareMcp?: McpServerEntry[];
   /** Commit per turn on a `room/<name>` branch. Default: when the session's cwd is a repo. */
   git?: boolean;
   /** A worktree per seat. Default: with git. */
@@ -126,6 +130,8 @@ export function serveAcp(stream: acp.Stream, opts: AcpServerOptions): AcpServer 
         mode: isNew ? opts.mode : undefined,
         turnTimeoutMs: opts.turnTimeoutMs,
         makeSeat: opts.makeSeat,
+        skills: opts.skills,
+        shareMcp: opts.shareMcp,
       });
       // An editor has no way to ask about a limit: a model decides when OPENROUTER_API_KEY is set, else limits hold.
       room.useModerator(process.env.OPENROUTER_API_KEY ? "auto" : "off");

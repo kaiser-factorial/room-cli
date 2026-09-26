@@ -2,7 +2,8 @@
  * The canonical room transcript: one JSON object per line, append-only.
  * Seats never read this file; the room reads it to build each seat's delta.
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { gunzipSync } from "node:zlib";
 import { dirname } from "node:path";
 import type { Step } from "./activity.js";
 
@@ -31,6 +32,11 @@ export class Transcript {
 
   static open(path: string): Transcript {
     const t = new Transcript(path);
+    // An archived room: unpack its transcript to go on appending.
+    if (!existsSync(path) && existsSync(path + ".gz")) {
+      writeFileSync(path, gunzipSync(readFileSync(path + ".gz")));
+      rmSync(path + ".gz");
+    }
     if (existsSync(path)) {
       for (const line of readFileSync(path, "utf8").split("\n")) {
         if (!line.trim()) continue;
