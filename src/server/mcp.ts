@@ -20,7 +20,7 @@ export interface RoomTools {
   status(seat: string): string;
   show(seat: string, args: { id?: number; from?: string; last?: number }): string;
   diff(seat: string, args: { seat?: string }): Promise<string>;
-  skills(seat: string): string;
+  skills(seat: string, args: { query?: string }): string;
   skill(seat: string, name: string): string;
 }
 
@@ -73,8 +73,8 @@ export const TOOLS = [
   {
     name: "skills",
     description:
-      "Skills set up in any seat's harness on this machine (Claude, Codex, Gemini, Hermes, shared), offered to every seat: name, where it came from, and what it is for.",
-    inputSchema: { type: "object", properties: {} },
+      "Search the skills set up in any seat's harness on this machine (Claude, Codex, Gemini, Hermes, shared), offered to every seat. Pass a query (words to match in a skill's name or description); without one you get a count and a sample. Then `skill` gives one in full.",
+    inputSchema: { type: "object", properties: { query: { type: "string", description: "Words that must all appear in the name or description, e.g. \"pdf form\"" } } },
   },
   {
     name: "skill",
@@ -195,7 +195,7 @@ export class RoomMcp {
       case "diff":
         return this.tools.diff(seat, { seat: str(a.seat) });
       case "skills":
-        return this.tools.skills(seat);
+        return this.tools.skills(seat, { query: str(a.query) });
       case "skill": {
         const name = str(a.name);
         if (!name) throw new Error("skill needs a name (the skills tool lists them)");

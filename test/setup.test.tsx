@@ -8,7 +8,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { render } from "ink-testing-library";
 import { afterEach, describe, expect, it } from "vitest";
-import { findMcpServers, findSkills, frontmatter, harnessOf, readSkill } from "../src/discover.js";
+import { findMcpServers, findSkills, frontmatter, harnessOf, readSkill, searchSkills, type Skill } from "../src/discover.js";
+import { linkIgnored } from "../src/git.js";
 import { archiveRoom, listRooms, readTranscript, recordRoom } from "../src/history.js";
 import { Room, type RoomUI } from "../src/room.js";
 import { applySecrets, loadSecrets, loadSettings, maskKey, saveOpenRouterKey, saveSettings } from "../src/settings.js";
@@ -123,6 +124,48 @@ class ToolSeat {
   }
 }
 
+describe("searchSkills", () => {
+  const many: Skill[] = Array.from({ length: 381 }, (_, i) => ({
+    name: i === 200 ? "pdf" : `skill-${i}`,
+    description: i === 7 ? "Fill PDF forms from a template" : i === 200 ? "Read PDFs" : "x ".repeat(200),
+    harness: i % 2 ? "claude" : "codex",
+    dir: "/x",
+  }));
+  it("without a query: a count by harness and a short sample, never the whole list", () => {
+    const out = searchSkills(many);
+    expect(out).toMatch(/^381 skills \(191 from codex, 190 from claude\)\. Pass a query/);
+    expect(out.split("\n").length).toBe(41);
+    expect(out.length).toBeLessThan(6000);
+  });
+  it("a query matches all its words, names first", () => {
+    expect(searchSkills(many, "pdf").split("\n").slice(1)).toEqual(["- pdf (codex): Read PDFs", "- skill-7 (claude): Fill PDF forms from a template"]);
+    expect(searchSkills(many, "pdf template")).toContain("1 match");
+    expect(searchSkills(many, "nothing-like-this")).toMatch(/^No skill matches/);
+  });
+});
+
+describe("desks share the main checkout's ignored deps", () => {
+  it("links node_modules and .env files git ignores, and nothing it tracks", async () => {
+    const cwd = tmp("repo");
+    const git = (...a: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd });
+    git("init", "-q", "-b", "main");
+    writeFileSync(join(cwd, ".gitignore"), "node_modules\n.env*\n");
+    mkdirSync(join(cwd, "node_modules", "x"), { recursive: true });
+    mkdirSync(join(cwd, "packages", "app", "node_modules"), { recursive: true });
+    writeFileSync(join(cwd, "packages", "app", "index.ts"), "");
+    writeFileSync(join(cwd, ".env.local"), "K=1");
+    writeFileSync(join(cwd, ".envrc-tracked"), "");
+    git("add", "-A");
+    git("commit", "-q", "-m", "seed");
+    const desk = join(cwd, ".room", "d", "desks", "a");
+    git("worktree", "add", "-q", "-b", "desk/a", desk);
+    const linked = await linkIgnored(cwd, desk);
+    expect(linked.sort()).toEqual([".env.local", "node_modules", join("packages", "app", "node_modules")].sort());
+    expect(existsSync(join(desk, "node_modules", "x"))).toBe(true);
+    expect(execFileSync("git", ["status", "--porcelain"], { cwd: desk, encoding: "utf8" })).toBe("");
+  });
+});
+
 describe("sharing skills and MCP servers with every seat", () => {
   it("the room's skills tools list and serve them; shared servers skip their own harness", async () => {
     const h = tmp("home");
@@ -159,10 +202,39 @@ describe("sharing skills and MCP servers with every seat", () => {
       });
       return ((await res.json()) as { result: { content: Array<{ text: string }> } }).result.content[0].text;
     };
-    expect(await call("skills")).toBe("- pdf (claude): Read PDFs");
+    expect(await call("skills")).toBe("1 skills (1 from claude):\n- pdf (claude): Read PDFs");
     expect(await call("skill", { name: "PDF" })).toContain("Use pdftotext.");
     await room.say("@grok hi");
     expect(fakes.get("grok")!.prompts[0]).toContain("The room also shares 1 skill");
+    await room.stop();
+  });
+});
+
+describe("waking", () => {
+  it("an untagged message wakes every seat by default, the first one included", async () => {
+    const fakes = new Map<string, ToolSeat>();
+    const room = await Room.open({
+      name: "wake",
+      cwd: tmp("cwd"),
+      seats: [
+        { name: "a", adapter: "acp", command: "x" },
+        { name: "b", adapter: "acp", command: "x" },
+      ],
+      human: "Corina",
+      ui: { seatEvent() {}, askHuman: async () => "deny", status() {} },
+      git: false,
+      tools: false,
+      makeSeat: (c) => {
+        const f = new ToolSeat(c);
+        fakes.set(c.name, f);
+        return f as never;
+      },
+    });
+    await room.start();
+    await room.say("hi all");
+    await room.say("and again");
+    expect(fakes.get("a")!.prompts.length).toBe(2);
+    expect(fakes.get("b")!.prompts.length).toBe(2);
     await room.stop();
   });
 });

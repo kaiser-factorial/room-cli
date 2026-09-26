@@ -177,3 +177,32 @@ export function readSkill(skill: Skill, maxFiles = 50): string {
     files.length ? `\nFiles beside it (read them from ${skill.dir}):\n${files.map((f) => `- ${f}`).join("\n")}` : "",
   ].join("\n");
 }
+
+/**
+ * The `skills` tool's answer: matches for a query, at most `max`, one short
+ * line each; without a query, a count by harness and a sample, since a
+ * machine can have hundreds and a tool result has a size limit.
+ */
+export function searchSkills(all: Skill[], query?: string, max = 40): string {
+  if (!all.length) return "No skills are shared in this room.";
+  const line = (k: Skill) => {
+    const d = k.description.replace(/\s+/g, " ").trim();
+    return `- ${k.name} (${k.harness}): ${d.length > 120 ? d.slice(0, 119) + "…" : d || "no description"}`;
+  };
+  const words = (query ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) {
+    const by = new Map<string, number>();
+    for (const k of all) by.set(k.harness, (by.get(k.harness) ?? 0) + 1);
+    const counts = [...by].map(([h, n]) => `${n} from ${h}`).join(", ");
+    if (all.length <= max) return `${all.length} skills (${counts}):\n${all.map(line).join("\n")}`;
+    return `${all.length} skills (${counts}). Pass a query to search them, e.g. {"query": "pdf"}. The first ${max}:\n${all.slice(0, max).map(line).join("\n")}`;
+  }
+  const hits = all.filter((k) => {
+    const hay = `${k.name} ${k.description}`.toLowerCase();
+    return words.every((w) => hay.includes(w));
+  });
+  // Name matches first: "pdf" should find the pdf skill before one that mentions PDFs.
+  hits.sort((a, b) => Number(words.some((w) => b.name.toLowerCase().includes(w))) - Number(words.some((w) => a.name.toLowerCase().includes(w))));
+  if (!hits.length) return `No skill matches "${query}" (of ${all.length}). Try fewer or other words.`;
+  return `${hits.length} match "${query}"${hits.length > max ? `; the first ${max}` : ""}:\n${hits.slice(0, max).map(line).join("\n")}`;
+}

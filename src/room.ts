@@ -5,7 +5,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { ConfigError, validateSeatName } from "./config.js";
-import { commitsAhead, commitTurn, diffText, ensureRoomBranch, ensureWorktree, headSha, headSubject, isRepo, mergeRef } from "./git.js";
+import { commitsAhead, commitTurn, diffText, linkIgnored, ensureRoomBranch, ensureWorktree, headSha, headSubject, isRepo, mergeRef } from "./git.js";
 import { emptyPolicy, makeDecider, type Action, type HumanChoice, type Policy, type SeatPolicy } from "./permissions.js";
 import { BACKGROUND, buildPreamble, LAND, PASS, roleList, rolePrompt } from "./preamble.js";
 import { humanTags, parseAddress, scanMentions } from "./scheduler.js";
@@ -17,7 +17,7 @@ import { neutralizeLabels, renderDelta, Transcript, type Entry } from "./transcr
 import { Activity } from "./activity.js";
 import { RoomMcp, type RoomTools } from "./server/mcp.js";
 import { recordRoom } from "./history.js";
-import { harnessOf, readSkill, type McpServerEntry, type Skill } from "./discover.js";
+import { harnessOf, readSkill, searchSkills, type McpServerEntry, type Skill } from "./discover.js";
 import { moderatorFor, type LimitCase, type Moderator, type Verdict } from "./moderator.js";
 
 export interface RoomUI {
@@ -58,7 +58,7 @@ export interface RoomOptions {
   mode?: RoomMode;
   /** Start in auto mode: tool calls no rule matches run without asking. A resumed room keeps its setting. */
   auto?: boolean;
-  /** Who an untagged human message wakes, for a new room: "last" (default) or "all". */
+  /** Who an untagged human message wakes, for a new room: "all" (default) or "last". */
   wake?: "last" | "all";
   /** Seat-to-seat wakes per thread for a new room; null for no limit. */
   cap?: number | null;
@@ -214,6 +214,8 @@ export class Room {
   /** A moderator's nudge, told to the seat at the top of its next turn. */
   private readonly modNotes = new Map<string, string>();
   private mod?: Moderator;
+  /** Ignored paths (node_modules, .env) linked from the main checkout into every desk. */
+  private linked: string[] = [];
 
   private constructor(readonly opts: RoomOptions) {
     for (const s of opts.seats) {
@@ -363,8 +365,11 @@ export class Room {
           const desk = { path: join(this.stateDir, "desks", s.name), branch: `desk/${this.opts.name}/${s.name}` };
           await ensureWorktree(this.opts.cwd, desk.path, desk.branch, this.state.branch);
           desks[s.name] = desk;
+          const linked = await linkIgnored(this.opts.cwd, desk.path).catch(() => []);
+          if (linked.length) this.linked = linked;
         }
         ui.status(`git: trunk ${this.state.branch}; each seat works and commits in its own desk, and lands its work with [land]`);
+        if (this.linked.length) ui.status(`desks share the main checkout's ${this.linked.join(", ")} (linked, never committed)`);
       } else {
         ui.status(`git: on branch ${this.state.branch}, committing after every edit turn`);
       }
@@ -504,8 +509,8 @@ export class Room {
     let wanted: string[];
     if (tags.all) wanted = this.activeSeats();
     else if (tags.seats.length) wanted = tags.seats;
-    else if (this.state.wake === "all") wanted = this.activeSeats();
-    else wanted = this.lastSpeaker() ? [this.lastSpeaker()!] : this.activeSeats().slice(0, 1);
+    else if (this.state.wake !== "last" || !this.lastSpeaker()) wanted = this.activeSeats();
+    else wanted = [this.lastSpeaker()!];
     for (const t of wanted.filter((x) => this.background.has(x))) {
       ui.status(`${t} is working in the background; it reads this when it finishes (@${t}! to interrupt)`);
     }
@@ -955,6 +960,7 @@ export class Room {
           promptsForwarded: config.adapter === "acp" && !(config.deny?.includes("*") || config.allow?.includes("*")),
           branch: this.state.branch,
           desk: this.state.desks?.[name],
+          linked: this.linked,
           tools: this.withTools.has(name),
           skills: this.withTools.has(name) ? (this.opts.skills?.length ?? 0) : 0,
         }) + "\n\n---\n\n"
@@ -1228,11 +1234,7 @@ export class Room {
       status: (seat) => this.statusFor(seat),
       show: (seat, args) => this.show(args),
       diff: (seat, args) => this.diffFor(seat, args.seat ?? seat),
-      skills: () => {
-        const all = this.opts.skills ?? [];
-        if (!all.length) return "No skills are shared in this room.";
-        return all.map((k) => `- ${k.name} (${k.harness}): ${k.description || "no description"}`).join("\n");
-      },
+      skills: (_seat, { query }) => searchSkills(this.opts.skills ?? [], query),
       skill: (_seat, name) => {
         const k = (this.opts.skills ?? []).find((x) => x.name.toLowerCase() === name.toLowerCase());
         if (!k) throw new Error(`no skill ${name}; the skills tool lists them`);
@@ -1301,7 +1303,7 @@ export class Room {
     return [
       `Room "${this.opts.name}", ${this.opts.human} is the human.`,
       ...rows,
-      `mode ${this.state.mode}; untagged messages wake ${this.state.wake === "all" ? "everyone" : "whoever spoke last"}; ` +
+      `mode ${this.state.mode}; untagged messages wake ${this.state.wake === "last" ? "whoever spoke last" : "everyone"}; ` +
         `seat-to-seat wakes per thread: ${cap === null ? "no limit" : cap}` +
         (this.useDesks ? `; trunk ${this.state.branch}` : ""),
     ].join("\n");

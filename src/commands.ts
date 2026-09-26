@@ -11,7 +11,7 @@ export const COMMAND_HELP = `  /seats                 seats, modes, and what is 
   /role <seat> [id|none]  give a seat a role from the web app's presets (/role alone lists them)
   /cap [n|+n|off]        seat-to-seat wakes per thread before the room pauses it (+n lets a paused thread go on)
   /mod [off|you|auto|<model>]  who decides when a limit trips: an OpenRouter model (falls back to you), you, or nobody
-  /wake last|all         who an untagged message wakes: whoever spoke last, or every idle seat
+  /wake all|last         who an untagged message wakes: every idle seat (default), or whoever spoke last
   /auto [on|off]         tool calls run without asking, except deny and ask rules
   /mode <seat> [id]      show or set a seat's session mode
   /unbench <seat>        bring back a seat benched after failing (so does @seat)
@@ -72,7 +72,7 @@ export async function runCommand(room: Room, text: string, out: (line: string) =
     case "/wake": {
       const [arg] = args;
       if (arg === "last" || arg === "all") room.setWake(arg);
-      out(`  untagged messages wake: ${room.state.wake === "all" ? "every idle seat" : "whoever spoke last"} (@name for one, @all for everyone)`);
+      out(`  untagged messages wake: ${room.state.wake === "last" ? "whoever spoke last" : "every idle seat"} (@name for one, @all for everyone)`);
       return;
     }
     case "/auto": {
@@ -94,7 +94,7 @@ export async function runCommand(room: Room, text: string, out: (line: string) =
         out(`  ${name.padEnd(8)} mode ${mode.padEnd(12)} session ${room.state.sessions[name] ?? "-"}${benched}`);
       }
       if (room.queued.length) out(`  next: ${room.queued.join(" → ")}`);
-      out(`  untagged messages wake: ${room.state.wake === "all" ? "every idle seat" : "whoever spoke last"}; seat-to-seat cap: ${room.cap ?? "off"}; moderator: ${room.moderator?.label ?? "off"}`);
+      out(`  untagged messages wake: ${room.state.wake === "last" ? "whoever spoke last" : "every idle seat"}; seat-to-seat cap: ${room.cap ?? "off"}; moderator: ${room.moderator?.label ?? "off"}`);
       return;
     }
     case "/bg": {

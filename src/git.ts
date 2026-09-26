@@ -2,8 +2,8 @@
  * Commit-per-turn versioning. The room owns git; seats are told not to touch it.
  */
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readdirSync, statSync, symlinkSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 
 const run = promisify(execFile);
@@ -135,4 +135,47 @@ export async function mergeRef(cwd: string, ref: string, author: string): Promis
 /** `git diff <args>`, for showing a seat's work. */
 export async function diffText(cwd: string, args: string[]): Promise<string> {
   return git(cwd, ["diff", ...args]);
+}
+
+/**
+ * A desk is a fresh checkout: no node_modules, no .env. Link the main
+ * checkout's into it (top level and one or two levels down, e.g.
+ * packages/room/node_modules), but only paths git ignores, so a link is
+ * never committed. Returns what was linked, relative to the repo.
+ */
+export async function linkIgnored(cwd: string, desk: string): Promise<string[]> {
+  const top = await git(cwd, ["rev-parse", "--show-toplevel"]);
+  const candidates: string[] = [];
+  const scan = (rel: string, depth: number) => {
+    let names: string[];
+    try {
+      names = readdirSync(join(top, rel));
+    } catch {
+      return;
+    }
+    for (const n of names) {
+      const r = rel ? join(rel, n) : n;
+      if (n === "node_modules" || /^\.env(\..+)?$/.test(n)) candidates.push(r);
+      else if (depth > 0 && !n.startsWith(".") && isDirSync(join(top, r))) scan(r, depth - 1);
+    }
+  };
+  scan("", 2);
+  const linked: string[] = [];
+  for (const rel of candidates) {
+    const at = join(desk, rel);
+    if (existsSync(at) || !existsSync(dirname(at))) continue;
+    const ignored = await git(top, ["check-ignore", "-q", rel]).then(() => true, () => false);
+    if (!ignored) continue;
+    symlinkSync(join(top, rel), at);
+    linked.push(rel);
+  }
+  return linked;
+}
+
+function isDirSync(p: string): boolean {
+  try {
+    return statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
 }

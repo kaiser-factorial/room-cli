@@ -25,7 +25,7 @@ Design", https://claude.ai/code/artifact/8624261e-8ed2-45ea-ad01-d8b06166e1e1
 | moderator: an OpenRouter model (or the human) decides when a limit trips | done; not tried against OpenRouter live |
 | menu (`room`): defaults, moderator key, skills & MCP sharing, past rooms, archive | done; checked in a pty |
 
-Tests: `pnpm install && pnpm test` in `packages/room`, 142 tests, run
+Tests: `pnpm install && pnpm test` in `packages/room`, 146 tests, run
 anywhere with Node 22+. The room is no longer in the root's npm workspace:
 it has its own `pnpm-lock.yaml` (pnpm 11, build scripts allowed in
 `pnpm-workspace.yaml`), its own `vitest.config.ts`, and a `room` job in CI
@@ -106,6 +106,16 @@ unpacks a `.gz`). `bin/room.ts`: `menu` is the default command; `runRoom`
 merges saved defaults under flags (human, seats, roles, personas, wake,
 cap, tui, moderator, skills, shareMcp). vitest points `ROOM_CONFIG_DIR`
 at a scratch dir so tests never touch the real config.
+
+## After the first live menu room (2026-09-26)
+
+- Untagged messages now wake every seat by default (`wake: "last"` is
+  opt-in); a room's first message used to wake only the first seat.
+- `skills` takes a query and never returns more than 40 lines.
+- Desks get the main checkout's ignored `node_modules` and `.env*` as links
+  (`git.linkIgnored`).
+- Allow-by-policy lines are gone (the tool call is on screen); deny lines
+  are one line, 100 characters at most.
 
 ## Emulating the harnesses in the cloud
 

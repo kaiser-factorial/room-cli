@@ -76,10 +76,19 @@ servers in `~/.claude.json`, `.mcp.json`, `~/.codex/config.toml`, and
 `~/.gemini/settings.json`.
 
 - **Skills** are shared with every seat by default, through the room's own
-  MCP server: `skills` lists them, `skill <name>` gives one in full with the
+  MCP server: `skills` searches them (with no query, a count and a sample:
+  a machine can have hundreds), `skill <name>` gives one in full with the
   paths of its files. So a skill set up only for Claude is usable by grok.
 - **MCP servers** you tick are handed to every seat at session start, except
   the harness whose config has it (it loads it itself).
+
+### Desks can build
+
+A desk is a fresh checkout, so the room links the main checkout's
+`node_modules` (top level and a couple of levels down) and `.env*` files
+into it, only where git ignores them, so a link is never committed. Seats
+can run, test, and typecheck; they are told not to install into the shared
+`node_modules`.
 
 ### Where rooms are kept, and what they cost
 
@@ -151,7 +160,7 @@ and not only on its summary:
 ```
 
 Your message posts at once, even while seats are working. An untagged
-message wakes whoever spoke last; `@a @b` wakes those seats, one after
+message wakes every seat; `@a @b` wakes those seats, one after
 another; `@all` wakes everyone; an empty line runs everyone again with
 nothing new. A seat replying `[pass]` is recorded as a pass. In a git
 repo, each seat works in its own desk (below) and its work lands on the
@@ -233,8 +242,8 @@ request the room never made, a non-JSON line) are shown once each, named.
 
 - **Threads, not rounds.** Each message you send starts a thread. It
   posts at once, and you can interject at any time. Who it wakes:
-  - untagged: whoever spoke last (`/wake all` or `--wake all` makes it
-    everyone);
+  - untagged: every idle seat (`/wake last` or `--wake last` makes it
+    whoever spoke last);
   - `@a @b` (anywhere in your message): those seats, one at a time, each
     seeing the replies before it;
   - `@all`: every idle seat;

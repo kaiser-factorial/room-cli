@@ -145,10 +145,10 @@ export function Menu({ ctx, onDone }: { ctx: MenuContext; onDone: (r: MenuResult
         };
       }),
       {
-        label: `Untagged messages wake: ${settings.wake === "all" ? "everyone" : "whoever spoke last"}`,
+        label: `Untagged messages wake: ${settings.wake === "last" ? "whoever spoke last" : "everyone"}`,
         hint: "←→ or enter",
-        cycle: () => update({ wake: settings.wake === "all" ? "last" : "all" }),
-        enter: () => update({ wake: settings.wake === "all" ? "last" : "all" }),
+        cycle: () => update({ wake: settings.wake === "last" ? "all" : "last" }),
+        enter: () => update({ wake: settings.wake === "last" ? "all" : "last" }),
       },
       {
         label: `Seat-to-seat wakes per message: ${settings.cap === "off" ? "no limit" : (settings.cap ?? 6)}`,

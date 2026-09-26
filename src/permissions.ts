@@ -75,7 +75,7 @@ export function makeDecider(hooks: DeciderHooks): PermissionDecider {
   return async (req) => {
     const forced = hooks.override?.(req);
     if (forced) {
-      hooks.log?.(`[${req.seat}] ${forced} by room: ${req.title}`);
+      hooks.log?.(`[${req.seat}] ${forced} by room: ${oneLine(req.title)}`);
       return optionFor(req, forced);
     }
     const policy = hooks.policyFor(req.seat);
@@ -83,7 +83,8 @@ export function makeDecider(hooks: DeciderHooks): PermissionDecider {
     // Allowed without a log line: the tool call itself is already on screen.
     if (action === "ask" && hooks.auto?.() && !(policy && hit(policy.ask, req))) return optionFor(req, "allow");
     if (action !== "ask") {
-      hooks.log?.(`[${req.seat}] ${action} by policy: ${req.title}`);
+      // An allow needs no line either; a deny does, kept to one line so a long command does not flood the screen.
+      if (action === "deny") hooks.log?.(`[${req.seat}] deny by policy: ${oneLine(req.title)}`);
       return optionFor(req, action);
     }
     const choice = await hooks.askHuman(req);
@@ -102,4 +103,9 @@ export function makeDecider(hooks: DeciderHooks): PermissionDecider {
         return "cancel";
     }
   };
+}
+
+function oneLine(s: string, max = 100): string {
+  const t = s.replace(/\s+/g, " ").trim();
+  return t.length > max ? t.slice(0, max - 1) + "…" : t;
 }
