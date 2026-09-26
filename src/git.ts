@@ -190,3 +190,8 @@ function isDirSync(p: string): boolean {
     return false;
   }
 }
+
+/** `author: subject` lines for a range, newest first. */
+export async function logRange(cwd: string, range: string, max: number): Promise<string> {
+  return git(cwd, ["log", `-${max}`, "--format=- %an: %s", range]);
+}

@@ -25,7 +25,7 @@ Design", https://claude.ai/code/artifact/8624261e-8ed2-45ea-ad01-d8b06166e1e1
 | moderator: an OpenRouter model (or the human) decides when a limit trips | done; not tried against OpenRouter live |
 | menu (`room`): defaults, moderator key, skills & MCP sharing, past rooms, archive | done; checked in a pty |
 
-Tests: `pnpm install && pnpm test` in `packages/room`, 146 tests, run
+Tests: `pnpm install && pnpm test` in `packages/room`, 148 tests, run
 anywhere with Node 22+. The room is no longer in the root's npm workspace:
 it has its own `pnpm-lock.yaml` (pnpm 11, build scripts allowed in
 `pnpm-workspace.yaml`), its own `vitest.config.ts`, and a `room` job in CI
@@ -114,6 +114,9 @@ at a scratch dir so tests never touch the real config.
 - `skills` takes a query and never returns more than 40 lines.
 - Desks get the main checkout's ignored `node_modules` and `.env*` as links
   (`git.linkIgnored`).
+- Desks are never merged into or committed by the room between turns:
+  `syncDesk` only notes what the trunk has (`logRange`); `closeTurn`
+  commits only when landing.
 - Allow-by-policy lines are gone (the tool call is on screen); deny lines
   are one line, 100 characters at most.
 

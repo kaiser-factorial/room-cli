@@ -5,7 +5,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { ConfigError, validateSeatName } from "./config.js";
-import { commitsAhead, commitTurn, diffText, linkIgnored, ensureRoomBranch, ensureWorktree, headSha, headSubject, isRepo, mergeRef } from "./git.js";
+import { commitsAhead, commitTurn, diffText, linkIgnored, logRange, ensureRoomBranch, ensureWorktree, headSha, headSubject, isRepo, mergeRef } from "./git.js";
 import { emptyPolicy, makeDecider, type Action, type HumanChoice, type Policy, type SeatPolicy } from "./permissions.js";
 import { BACKGROUND, buildPreamble, LAND, PASS, roleList, rolePrompt } from "./preamble.js";
 import { humanTags, parseAddress, scanMentions } from "./scheduler.js";
@@ -1131,38 +1131,38 @@ export class Room {
     const trunk = this.state.branch;
     if (!desk || !trunk) return;
     try {
-      // Anything left uncommitted (a turn that failed before closing) is the seat's.
-      await commitTurn(desk.path, name, `${name}: uncommitted work`);
-      const r = await this.withTrunk(() => mergeRef(desk.path, trunk, name));
-      if (r.status === "merged") {
-        this.deskNotes.set(name, `[room]: Merged ${trunk} into your branch: ${r.stat} (${fileList(r.files)}).`);
-      } else if (r.status === "conflict") {
-        const where = r.files.length ? ` in ${fileList(r.files)}` : " (uncommitted changes in the way)";
-        this.opts.ui.status(`${name}'s desk conflicts with ${trunk}${where}; ${name} is asked to merge it`);
+      // Nothing merges into a desk on its own: the seat is told what is new and merges when it is ready.
+      const behind = await commitsAhead(desk.path, "HEAD", trunk);
+      if (behind > 0) {
+        const log = await logRange(desk.path, `HEAD..${trunk}`, 5);
         this.deskNotes.set(
           name,
-          `[room]: ${trunk} has changes that conflict with your branch${where}. Merge it (\`git merge ${trunk}\`), ` +
-            `resolve, and commit; the room brings your branch into ${trunk} when your turn ends.`,
+          `[room]: ${trunk} has ${behind} commit${behind === 1 ? "" : "s"} your branch does not:\n${log}` +
+            `${behind > 5 ? `\n… and ${behind - 5} more` : ""}\n` +
+            `\`git merge ${trunk}\` when you are ready to build on them (commit or stash your own work first).`,
         );
       }
     } catch (err) {
-      this.opts.ui.status(`${name}: could not update its desk: ${(err as Error).message}`);
+      this.opts.ui.status(`${name}: could not check its desk against ${trunk}: ${(err as Error).message}`);
     }
   }
 
   /**
-   * After a seat's turn: commit what it left uncommitted, as the seat, on
-   * its desk. Its branch lands on the trunk only when its reply says `[land]`.
+   * After a seat's turn: its work stays on its desk as it left it,
+   * committed or not. `[land]` commits what is left, as the seat, and merges
+   * its branch into the trunk.
    */
   private async closeTurn(name: string, entry: Entry, text: string): Promise<void> {
     const desk = this.state.desks?.[name];
     if (!desk) return;
-    try {
-      await commitTurn(desk.path, name, `${name}: turn ${entry.id}\n\n${text.trim().slice(0, 400)}`);
-    } catch (err) {
-      this.opts.ui.status(`${name}: could not commit its desk: ${(err as Error).message}`);
+    if (wantsLand(text)) {
+      try {
+        await commitTurn(desk.path, name, `${name}: turn ${entry.id}\n\n${text.trim().slice(0, 400)}`);
+      } catch (err) {
+        this.opts.ui.status(`${name}: could not commit its desk: ${(err as Error).message}`);
+      }
+      await this.mergeDesk(name);
     }
-    if (wantsLand(text)) await this.mergeDesk(name);
     this.saveState();
   }
 

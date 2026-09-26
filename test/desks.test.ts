@@ -69,8 +69,13 @@ describe("desks", () => {
     // Written in a's desk, then landed on the trunk in the human's tree, as a.
     expect(readFileSync(join(cwd, "calc.py"), "utf8")).toBe("return a + b\n");
     expect(git("log", "-1", "--format=%an")).toBe("a");
+    // b's desk is not touched: it is told, and merges when it is ready.
     await room.say("@b >> say looking");
-    expect(readFileSync(join(room.seatCwd("b"), "calc.py"), "utf8")).toBe("return a + b\n");
+    const showB = (ref: string) => execFileSync("git", ["show", `${ref}:calc.py`], { cwd: room.seatCwd("b"), encoding: "utf8" });
+    expect(showB("HEAD")).toBe("return a - b\n");
+    execFileSync("git", ["checkout", "-q", "--", "."], { cwd: room.seatCwd("b") });
+    execFileSync("git", ["merge", "-q", "room/d"], { cwd: room.seatCwd("b"), env: { ...process.env, GIT_AUTHOR_NAME: "b", GIT_AUTHOR_EMAIL: "b@room", GIT_COMMITTER_NAME: "b", GIT_COMMITTER_EMAIL: "b@room" } });
+    expect(showB("HEAD")).toBe("return a + b\n");
     // The human's tree never picked up the desks.
     expect(git("status", "--porcelain")).toBe("");
     await room.stop();
@@ -85,20 +90,35 @@ describe("desks", () => {
     await room.stop();
   }, 60_000);
 
-  it("commits every turn on the desk but lands nothing until [land] or /land", async () => {
+  it("leaves a turn's work on the desk as it was, and lands nothing until [land] or /land", async () => {
     const { cwd, git } = repo();
     const { room } = await open(cwd, tmp("state"));
     await room.say("@a >> edit wip.txt half done");
-    // Committed as a, on a's branch; the trunk and the human's tree are untouched.
+    // Nothing committed for the seat: its work in progress stays in progress.
     expect(existsSync(join(cwd, "wip.txt"))).toBe(false);
-    expect(git("log", "-1", "--format=%an|%s", "desk/d/a")).toMatch(/^a\|a: turn \d+/);
-    expect(await room.unlanded("a")).toBe(1);
+    expect(readFileSync(join(room.seatCwd("a"), "wip.txt"), "utf8")).toBe("half done\n");
+    expect(git("log", "-1", "--format=%s", "desk/d/a")).toBe("seed");
     await room.say("@a >> edit wip.txt three quarters");
-    expect(await room.unlanded("a")).toBe(2);
     expect(existsSync(join(cwd, "wip.txt"))).toBe(false);
+    // /land commits what is left, as a, and merges it.
     await room.land("a");
     expect(readFileSync(join(cwd, "wip.txt"), "utf8")).toBe("three quarters\n");
+    expect(git("log", "-2", "--format=%an|%s", "desk/d/a").split("\n")[0]).toMatch(/^a\|a: uncommitted work/);
     expect(await room.unlanded("a")).toBe(0);
+    await room.stop();
+  }, 60_000);
+
+  it("never merges the trunk into a desk: the seat is told what is new", async () => {
+    const { cwd } = repo();
+    const state = tmp("state");
+    const { room } = await open(cwd, state);
+    await room.say("@a >> edit calc.py return a * b\n>> land");
+    await room.say("@b >> say hi");
+    expect(execFileSync("git", ["show", "HEAD:calc.py"], { cwd: room.seatCwd("b"), encoding: "utf8" })).toBe("return a - b\n");
+    const p = lastPrompt(state, room.state.sessions.b);
+    expect(p).toMatch(/\[room\]: room\/d has \d+ commits? your branch does not:/);
+    expect(p).toContain("- a: a: turn");
+    expect(p).toContain("`git merge room/d` when you are ready");
     await room.stop();
   }, 60_000);
 
@@ -112,12 +132,10 @@ describe("desks", () => {
     expect(readFileSync(join(cwd, "calc.py"), "utf8")).toBe("return a\n");
     expect(u.lines).toContain("b's work conflicts with room/d in calc.py; it stays on desk/d/b until b merges room/d into it");
     expect(readFileSync(join(room.seatCwd("b"), "calc.py"), "utf8")).toBe("return b\n");
-    // On b's next turn the room tells it to merge the trunk and resolve.
+    // On b's next turn the room tells it what the trunk has; merging and resolving is b's.
     room.setRoomMode("sequential");
     await room.say("@b >> say on it");
-    expect(lastPrompt(state, room.state.sessions.b)).toContain(
-      "[room]: room/d has changes that conflict with your branch in calc.py. Merge it (`git merge room/d`)",
-    );
+    expect(lastPrompt(state, room.state.sessions.b)).toContain("`git merge room/d` when you are ready");
     await room.stop();
   }, 60_000);
 

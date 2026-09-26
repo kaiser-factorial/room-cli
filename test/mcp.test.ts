@@ -213,7 +213,7 @@ describe("room MCP tools", () => {
     );
     await room.say("@a edit");
     await room.say("@b what did a do?");
-    expect(diff).toContain("not on room/mcp yet");
+    expect(diff).toContain("Uncommitted in a's desk");
     expect(diff).toContain("+from a");
     await room.stop();
   });

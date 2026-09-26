@@ -186,9 +186,11 @@ working directory, and gives every seat a **desk**: a git worktree at
 - A seat owns git in its desk: it edits, runs, and commits there, with its
   own messages. Its commits carry its name (the room sets `GIT_AUTHOR_NAME`
   for it), not yours.
-- Before each of its turns the room merges the trunk into its desk, so it
-  builds on everyone's landed work. After the turn it commits whatever the
-  seat left uncommitted, as the seat, on its desk.
+- Nothing changes a desk but its seat. When the trunk has new work, the
+  seat is told at the top of its next turn (who landed what, and
+  `git merge room/<name>` to take it) and merges when it is ready. Work it
+  leaves uncommitted stays that way between turns; landing (`[land]` or
+  `/land`) commits what is left, as the seat, before merging.
 - Nothing reaches the trunk until the seat says so: a reply ending `[land]`
   merges its branch into the trunk. `/land <seat>` does it for a seat;
   `/seats` shows how many commits each desk has not landed. Your own edits
