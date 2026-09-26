@@ -429,6 +429,24 @@ export class ReplUI implements RoomUI {
     for (const line of renderToolContent(content)) this.out.write(this.style.dim(sanitizeForTerminal(line)) + "\n");
   }
 
+  /** A limit tripped and the moderator is you: let it through? One question at a time, like permissions. */
+  askLimit(question: string): Promise<boolean> {
+    const run = this.asking.then(async () => {
+      this.gap();
+      this.speaker = undefined;
+      this.out.write(`${this.style.bold("?")} ${sanitizeForTerminal(question)}\n`);
+      for (;;) {
+        const a = (await this.lines.ask("  [y] let it through  [n] hold > ", false))?.trim().toLowerCase();
+        this.inputEnded();
+        if (a === null || a === undefined) return false;
+        if (a === "y") return true;
+        if (a === "n") return false;
+      }
+    });
+    this.asking = run.catch(() => undefined);
+    return run;
+  }
+
   askHuman(req: PermissionRequestView): Promise<HumanChoice> {
     const run = this.asking.then(() => this.askOne(req));
     this.asking = run.catch(() => undefined);

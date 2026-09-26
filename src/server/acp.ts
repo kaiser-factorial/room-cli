@@ -64,6 +64,7 @@ const COMMANDS: acp.AvailableCommand[] = [
   { name: "sequential", description: "Seats answer one at a time" },
   { name: "role", description: "Give a seat a role from the presets; alone, list them", input: { hint: "<seat> [id|none]" } },
   { name: "cap", description: "Seat-to-seat wakes per thread; +n lets a paused thread go on", input: { hint: "[n|+n|off]" } },
+  { name: "mod", description: "Who decides when a limit trips: an OpenRouter model, you (here: held), or off", input: { hint: "off|you|auto|<model>" } },
   { name: "wake", description: "Who an untagged message wakes: whoever spoke last, or every idle seat", input: { hint: "last|all" } },
   { name: "auto", description: "Tool calls run without asking, except deny and ask rules", input: { hint: "[on|off]" } },
   { name: "mode", description: "Show or set a seat's session mode", input: { hint: "<seat> [mode]" } },
@@ -126,6 +127,8 @@ export function serveAcp(stream: acp.Stream, opts: AcpServerOptions): AcpServer 
         turnTimeoutMs: opts.turnTimeoutMs,
         makeSeat: opts.makeSeat,
       });
+      // An editor has no way to ask about a limit: a model decides when OPENROUTER_API_KEY is set, else limits hold.
+      room.useModerator(process.env.OPENROUTER_API_KEY ? "auto" : "off");
       await room.start();
     } catch (err) {
       await room?.stop().catch(() => undefined);

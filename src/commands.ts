@@ -10,6 +10,7 @@ export const COMMAND_HELP = `  /seats                 seats, modes, and what is 
   /parallel, /sequential room mode: all seats answer at once, or in turn
   /role <seat> [id|none]  give a seat a role from the web app's presets (/role alone lists them)
   /cap [n|+n|off]        seat-to-seat wakes per thread before the room pauses it (+n lets a paused thread go on)
+  /mod [off|you|auto|<model>]  who decides when a limit trips: an OpenRouter model (falls back to you), you, or nobody
   /wake last|all         who an untagged message wakes: whoever spoke last, or every idle seat
   /auto [on|off]         tool calls run without asking, except deny and ask rules
   /mode <seat> [id]      show or set a seat's session mode
@@ -56,6 +57,18 @@ export async function runCommand(room: Room, text: string, out: (line: string) =
       out(`  seat-to-seat cap: ${room.cap ?? "off"} per thread`);
       return;
     }
+    case "/mod": {
+      const [arg] = args;
+      if (arg) {
+        try {
+          room.useModerator(arg);
+        } catch (err) {
+          return out(`  ${(err as Error).message}`);
+        }
+      }
+      out(`  moderator: ${room.moderator?.label ?? "off (limits just hold)"}`);
+      return;
+    }
     case "/wake": {
       const [arg] = args;
       if (arg === "last" || arg === "all") room.setWake(arg);
@@ -81,7 +94,7 @@ export async function runCommand(room: Room, text: string, out: (line: string) =
         out(`  ${name.padEnd(8)} mode ${mode.padEnd(12)} session ${room.state.sessions[name] ?? "-"}${benched}`);
       }
       if (room.queued.length) out(`  next: ${room.queued.join(" → ")}`);
-      out(`  untagged messages wake: ${room.state.wake === "all" ? "every idle seat" : "whoever spoke last"}; seat-to-seat cap: ${room.cap ?? "off"}`);
+      out(`  untagged messages wake: ${room.state.wake === "all" ? "every idle seat" : "whoever spoke last"}; seat-to-seat cap: ${room.cap ?? "off"}; moderator: ${room.moderator?.label ?? "off"}`);
       return;
     }
     case "/bg": {

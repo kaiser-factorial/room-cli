@@ -145,7 +145,7 @@ function QuestionBar({ store, chips }: { store: TuiStore; chips: SeatChip[] }) {
         <Text bold color={colourOf(chip)}>
           {ask.req.seat}
         </Text>
-        {` wants: ${ask.req.title}${ask.req.kind ? ` [${ask.req.kind}]` : ""}`}
+        {ask.req.kind === "limit" ? ` ${ask.req.title}` : ` wants: ${ask.req.title}${ask.req.kind ? ` [${ask.req.kind}]` : ""}`}
         {store.asks.length > 1 ? <Text dimColor>{`  (+${store.asks.length - 1} waiting)`}</Text> : null}
       </Text>
       {ask.preview.slice(0, 12).map((l, i) => (
@@ -153,7 +153,7 @@ function QuestionBar({ store, chips }: { store: TuiStore; chips: SeatChip[] }) {
           {l}
         </Text>
       ))}
-      <Text dimColor>a allow · A always (room rule) · d deny · c cancel turn</Text>
+      <Text dimColor>{ask.req.kind === "limit" ? "a let it through · d hold" : "a allow · A always (room rule) · d deny · c cancel turn"}</Text>
     </Box>
   );
 }

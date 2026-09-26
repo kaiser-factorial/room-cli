@@ -22,8 +22,9 @@ Design", https://claude.ai/code/artifact/8624261e-8ed2-45ea-ad01-d8b06166e1e1
 | threads step 1: event loop replaces rounds | done: wake rules, `@all`, `@seat!`, queue-at-end tags, `/cap`, `/wake`, echo pause |
 | threads step 2: room MCP server (`inbox`, `post`, `status`, `show`, `diff`) | done; HTTP for Claude, stdio bridge otherwise; not yet tried with a live harness |
 | threads step 3: urgent interrupts polish, posting rate limits | done |
+| moderator: an OpenRouter model (or the human) decides when a limit trips | done; not tried against OpenRouter live |
 
-Tests: `pnpm install && pnpm test` in `packages/room`, 123 tests, run
+Tests: `pnpm install && pnpm test` in `packages/room`, 131 tests, run
 anywhere with Node 22+. The room is no longer in the root's npm workspace:
 it has its own `pnpm-lock.yaml` (pnpm 11, build scripts allowed in
 `pnpm-workspace.yaml`), its own `vitest.config.ts`, and a `room` job in CI
@@ -76,6 +77,21 @@ thread goes to the front of `threads`, so the seat answers it first.
 `parseAddress` now strips `@seat!` and `@all` from the posted text. `post`
 is limited per turn (`postLimit`, default 3), spaced (`postGapMs`, default
 5000), and refuses a repeat; `Room.posts` resets when a turn starts.
+
+## The moderator
+
+`src/moderator.ts`: `OpenRouterModerator` (chat completions, JSON verdict,
+20 s timeout, falls back to `HumanModerator` on any error) and
+`HumanModerator` (`RoomUI.askLimit`: a y/n in the REPL, the question bar
+in the TUI; without it, hold). `moderatorFor(spec)` builds one from
+`auto|you|off|<model>`. In `route()`, a tripped cap or echo calls
+`consult()`: the seat is held, `t.pending` keeps the thread open, and an
+allow queues it with headroom (`t.bonus`, or cleared hops for an echo).
+`CEILING` (3× the cap) is never asked about. A nudge's note goes to both
+seats through `modNotes`. `post` past its per-turn count asks too (not
+past the gap). Also fixed here: a parallel batch is recorded and landed in
+roster order again (`beginTurn`'s `order`), and every seat in a parallel
+round is shown as alongside, so the editor never interleaves them.
 
 ## Emulating the harnesses in the cloud
 

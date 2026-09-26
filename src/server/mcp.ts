@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 /** What the tools do; the room implements it. Each returns text for the seat. */
 export interface RoomTools {
   inbox(seat: string): string;
-  post(seat: string, text: string): string;
+  post(seat: string, text: string): string | Promise<string>;
   status(seat: string): string;
   show(seat: string, args: { id?: number; from?: string; last?: number }): string;
   diff(seat: string, args: { seat?: string }): Promise<string>;

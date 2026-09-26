@@ -131,6 +131,7 @@ interface StartOptions {
   role?: string[];
   wake?: string;
   cap?: string;
+  moderator: string;
   turnTimeout: string;
 }
 
@@ -145,6 +146,7 @@ function roomOptions(cmd: Command): Command {
     .option("--auto", "tool calls run without asking you, except deny and ask rules")
     .option("--wake <who>", "who an untagged message wakes: last (whoever spoke last) or all")
     .option("--cap <n>", "seat-to-seat wakes per thread before the room pauses it (a number, or off)")
+    .option("--moderator <who>", "who decides when a limit trips: auto (OpenRouter if OPENROUTER_API_KEY, else you), you, off, or an OpenRouter model id", "auto")
     .option("--tui", "full-screen terminal UI: live seat boxes, a status bar, and the input always open")
     .option("--role <seat=role...>", "give seats roles from the web app's presets, e.g. --role grok=critic claude=implementer")
     .option("--turn-timeout <seconds>", "per-turn timeout", "600");
@@ -217,6 +219,7 @@ async function runRoom(name: string, lineupSeats: SeatConfig[], opts: StartOptio
       mode: opts.parallel ? "parallel" : undefined,
       turnTimeoutMs: Number(opts.turnTimeout) * 1000,
     });
+    withConfig(() => room.useModerator(opts.moderator));
     store.status(`room "${name}" with ${seats.map((s) => s.name).join(", ")} in ${cwd}. /help for commands, Ctrl+C to cancel a round.`);
     try {
       await runTui(room, store, room.start());
@@ -242,6 +245,8 @@ async function runRoom(name: string, lineupSeats: SeatConfig[], opts: StartOptio
     mode: opts.parallel ? "parallel" : undefined,
     turnTimeoutMs: Number(opts.turnTimeout) * 1000,
   });
+  withConfig(() => room.useModerator(opts.moderator));
+  ui.status(`moderator: ${room.moderator?.label ?? "off"}`);
   ui.status(`starting ${seats.map((s) => s.name).join(", ")} in ${cwd}`);
   try {
     await room.start();

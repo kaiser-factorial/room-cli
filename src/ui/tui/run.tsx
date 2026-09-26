@@ -27,6 +27,11 @@ export class TuiUI implements RoomUI {
   askHuman(req: PermissionRequestView): Promise<HumanChoice> {
     return this.store.ask(req);
   }
+  /** A limit tripped and the moderator is you: asked in the question bar, a to let it through, d to hold. */
+  async askLimit(question: string): Promise<boolean> {
+    const choice = await this.store.ask({ seat: "room", sessionId: "", toolCallId: "", title: question, kind: "limit", options: [] });
+    return choice === "allow" || choice === "allow_always";
+  }
   posted(seat: string, text: string): void {
     this.store.posted(seat, text);
   }

@@ -238,6 +238,27 @@ get the URL; others get a small stdio bridge (`src/server/mcp-bridge.ts`)
 that forwards to it. CLI seats do not get the tools yet. `tools: false` in
 `Room.open` turns it off.
 
+### The moderator
+
+The limits above are blunt, and plenty of long exchanges are real work. So
+when one trips (the wake cap, the echo pause, or a seat's post limit), the
+room asks a moderator instead of just stopping:
+
+- **A model on OpenRouter** when `OPENROUTER_API_KEY` is set: by default
+  `anthropic/claude-haiku-4.5` (`ROOM_MODERATOR_MODEL` or `--moderator
+  <model id>` picks another). It sees the last few messages and answers
+  allow, hold, or nudge (let it through, and tell the seats what would
+  make the next turn worth it).
+- **You**, when there is no key or the model cannot answer: a
+  `let it through? [y/n]` question, like a permission prompt.
+
+Allowed, the thread gets three more wakes (or a fresh echo count) before
+the moderator is asked again, and never more than three times the cap.
+Every decision is a line in the transcript:
+`moderator (anthropic/claude-haiku-4.5): allow grok → claude: converging on the parser fix`.
+`/mod off|you|auto|<model>` switches it (`--moderator` at start). In an
+editor (`room acp`) there is no one to ask, so without a key limits hold.
+
 ### Permissions, two levers
 
 **Auto mode** (`/auto on`, or `--auto` at start): a tool call that no rule

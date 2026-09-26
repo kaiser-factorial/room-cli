@@ -16,6 +16,7 @@ import type { PermissionDecider, PermissionRequestView, Seat, SeatConfig, SeatEv
 import { neutralizeLabels, renderDelta, Transcript, type Entry } from "./transcript.js";
 import { Activity } from "./activity.js";
 import { RoomMcp, type RoomTools } from "./server/mcp.js";
+import { moderatorFor, type LimitCase, type Moderator, type Verdict } from "./moderator.js";
 
 export interface RoomUI {
   seatEvent(seat: string, ev: SeatEvent): void;
@@ -27,6 +28,8 @@ export interface RoomUI {
   status(line: string): void;
   /** A seat posted mid-turn with the room's `post` tool. Without it: `status`. */
   posted?(seat: string, text: string): void;
+  /** A limit tripped and the moderator is the human: let it through? Without it, it holds. */
+  askLimit?(question: string): Promise<boolean>;
 }
 
 export type RoomMode = "sequential" | "parallel";
@@ -61,6 +64,8 @@ export interface RoomOptions {
   postLimit?: number;
   /** Least time between two posts from one seat, in ms. Default 5000. */
   postGapMs?: number;
+  /** Decides when a limit trips (cap, echo, post limit). Without one, limits just hold. */
+  moderator?: Moderator;
   /** Serve the room's MCP tools (inbox, post, status, show, diff) to seats that take them. Default: true. */
   tools?: boolean;
   /** Seat factory, for tests. */
@@ -123,6 +128,10 @@ interface Thread {
   /** Seats tagged past the cap or paused as a volley; `/cap +n` lets them go on. */
   held: string[];
   hops: Array<{ from: string; to: string; length: number }>;
+  /** Extra wakes the moderator granted past the cap. */
+  bonus: number;
+  /** Moderator decisions still out: the thread is not over until they are in. */
+  pending: number;
   cancelled: boolean;
   resolve: (r: RoundResult) => void;
 }
@@ -132,6 +141,9 @@ const VOLLEY_SHORT = 300;
 
 /** Seat-to-seat wakes allowed per thread before the room pauses it (`/cap` changes it). */
 export const MAX_HANDOFFS = 6;
+
+/** A moderator can let a thread run to this many times the cap, and no further. */
+const CEILING = 3;
 
 /** Tool kinds refused during a parallel round: every seat is writing at once. */
 const MUTATING_KINDS = new Set(["edit", "delete", "move", "execute"]);
@@ -193,6 +205,9 @@ export class Room {
   private readonly interrupted = new Map<string, string>();
   /** Told to an interrupted seat at the top of its next turn. */
   private readonly cutNotes = new Map<string, string>();
+  /** A moderator's nudge, told to the seat at the top of its next turn. */
+  private readonly modNotes = new Map<string, string>();
+  private mod?: Moderator;
 
   private constructor(readonly opts: RoomOptions) {
     for (const s of opts.seats) {
@@ -221,6 +236,7 @@ export class Room {
         };
     this.state.mode ??= "sequential";
     if (opts.auto) this.state.auto = true;
+    this.mod = opts.moderator;
     if (opts.wake) this.state.wake ??= opts.wake;
     if (opts.cap !== undefined) this.state.cap ??= opts.cap;
     for (const s of opts.seats) {
@@ -596,6 +612,8 @@ export class Room {
       wakes: 0,
       held: [],
       hops: [],
+      bonus: 0,
+      pending: 0,
       cancelled: false,
       resolve,
     };
@@ -616,6 +634,8 @@ export class Room {
       if (t.cancelled) t.queue.length = 0;
       const shared = !this.useDesks && !parallel;
       const batch: string[] = [];
+      // A parallel batch is recorded and landed in roster order, whoever finishes first.
+      let prev: Promise<void> = Promise.resolve();
       while (t.queue.length && (parallel || t.answering.size === 0)) {
         if (shared && this.answeringCount() > 0) break;
         const i = t.queue.findIndex((s) => !this.active.has(s) && !this.starting.has(s) && !this.background.has(s));
@@ -626,10 +646,13 @@ export class Room {
           if (batch.length === 1) this.opts.ui.status(`parallel round: ${[seat, ...t.queue.filter((s) => !this.active.has(s) && !this.background.has(s))].join(", ")}`);
           if (this.configOf(seat).adapter === "cli") this.opts.ui.status(`${seat} is a cli seat: its edits cannot be refused, only asked for in the prompt`);
         }
-        this.beginTurn(t, seat, parallel);
+        let done!: () => void;
+        const mine = new Promise<void>((r) => (done = r));
+        this.beginTurn(t, seat, parallel, parallel ? { wait: prev, done } : undefined);
+        prev = mine;
         if (!parallel) break;
       }
-      if (!t.queue.length && t.answering.size === 0) {
+      if (!t.queue.length && t.answering.size === 0 && t.pending === 0) {
         this.threads.splice(this.threads.indexOf(t), 1);
         t.resolve({ cancelled: t.cancelled });
       }
@@ -640,11 +663,12 @@ export class Room {
     return [...this.active, ...this.starting].filter((n) => !this.background.has(n)).length;
   }
 
-  private beginTurn(t: Thread, seat: string, parallel: boolean): void {
+  private beginTurn(t: Thread, seat: string, parallel: boolean, order?: { wait: Promise<void>; done: () => void }): void {
     t.answering.add(seat);
     this.starting.add(seat);
     // Another seat is already answering: this one's output goes to the side, so neither splits the other.
-    const alongside = this.answeringCount() > 1;
+    // In a parallel round every seat is alongside the others, the first included.
+    const alongside = parallel || this.answeringCount() > 1;
     void (async () => {
       try {
         // Anything the human changed is theirs, not the seat's. Under the trunk lock: another seat may be merging.
@@ -652,7 +676,7 @@ export class Room {
         if (t.cancelled) return;
         const { ui } = this.opts;
         const emit = (ev: SeatEvent) => (alongside && ui.sideEvent ? ui.sideEvent(seat, ev) : ui.seatEvent(seat, ev));
-        const entry = await this.runTurn(seat, { emit, parallel, cancelled: () => t.cancelled });
+        const entry = await this.runTurn(seat, { emit, parallel, cancelled: () => t.cancelled, after: order?.wait });
         const cut = this.interrupted.delete(seat) && entry?.text.endsWith(`(interrupted by ${this.opts.human})`);
         if (entry?.kind === "message" && !cut && !t.cancelled && !this.stopped) {
           this.maybeBackground(seat, entry.text);
@@ -661,6 +685,7 @@ export class Room {
       } catch (err) {
         this.opts.ui.status(`${seat}: ${(err as Error).message}`);
       } finally {
+        order?.done();
         this.starting.delete(seat);
         t.answering.delete(seat);
         this.pump();
@@ -701,14 +726,25 @@ export class Room {
       }
       if (t.queue.includes(m) || t.held.includes(m)) continue;
       const cap = this.cap;
-      if (cap !== null && t.wakes >= cap) {
+      if (cap !== null && t.wakes >= cap * CEILING) {
         t.held.push(m);
-        ui.status(`${from} → ${m}, held: ${cap} seat-to-seat wakes this thread (/cap +10 to let them go on)`);
+        ui.status(`${from} → ${m}, held: ${t.wakes} seat-to-seat wakes this thread, the most even a moderator can allow (/cap +10 to go on)`);
+        continue;
+      }
+      if (cap !== null && t.wakes >= cap + t.bonus) {
+        if (this.moderator) this.consult(t, { kind: "cap", from, to: m, detail: `${t.wakes} seat-to-seat wakes this thread (cap ${cap})`, recent: this.recent() }, text);
+        else {
+          t.held.push(m);
+          ui.status(`${from} → ${m}, held: ${cap} seat-to-seat wakes this thread (/cap +10 to let them go on)`);
+        }
         continue;
       }
       if (this.volleying(t, from, m, text)) {
-        t.held.push(m);
-        ui.status(`${from} and ${m} have been going back and forth; paused. @ either to continue`);
+        if (this.moderator) this.consult(t, { kind: "echo", from, to: m, detail: `${from} and ${m} have traded short replies four times running`, recent: this.recent() }, text);
+        else {
+          t.held.push(m);
+          ui.status(`${from} and ${m} have been going back and forth; paused. @ either to continue`);
+        }
         continue;
       }
       t.wakes += 1;
@@ -716,6 +752,64 @@ export class Room {
       t.queue.push(m);
       ui.status(`${from} → ${m}`);
     }
+  }
+
+  /**
+   * A limit tripped and a moderator is set: hold the seat while it decides.
+   * Allowed, the seat is queued with a little headroom (three more wakes, or
+   * a fresh echo count) so the moderator is not asked again at once.
+   */
+  private consult(t: Thread, c: LimitCase & { to: string }, text: string): void {
+    const { ui } = this.opts;
+    const mod = this.moderator!;
+    t.held.push(c.to);
+    t.pending += 1;
+    ui.status(`${c.from} → ${c.to}: ${c.detail}; asking the moderator (${mod.label})`);
+    void mod
+      .decide(c)
+      .catch((err): Verdict => ({ verdict: "hold", reason: `moderator failed: ${(err as Error).message}`, by: mod.label }))
+      .then((v) => {
+        const line = `moderator (${v.by}): ${v.verdict} ${c.from} → ${c.to}: ${v.reason}`;
+        this.transcript.append("room", "system", line);
+        ui.status(v.verdict === "hold" ? `${line} (/cap +10 or @${c.to} to go on)` : line);
+        if (v.verdict === "hold" || t.cancelled || this.stopped) return;
+        const i = t.held.indexOf(c.to);
+        if (i < 0) return; // released meanwhile (/cap)
+        t.held.splice(i, 1);
+        if (c.kind === "cap") t.bonus = t.wakes + 3 - (this.cap ?? 0);
+        else t.hops.length = 0;
+        if (v.note) for (const s of [c.from, c.to]) this.modNotes.set(s, `[room]: The moderator says: ${v.note}`);
+        if (!t.queue.includes(c.to)) {
+          t.wakes += 1;
+          t.hops.push({ from: c.from, to: c.to, length: text.length });
+          t.queue.push(c.to);
+        }
+      })
+      .finally(() => {
+        t.pending -= 1;
+        this.pump();
+      });
+  }
+
+  /** The last few messages, for the moderator. */
+  private recent(n = 8): string {
+    const entries = this.transcript.entries.filter((e) => e.kind === "message").slice(-n);
+    return entries.map((e) => `[${e.from}]: ${e.text.length > 600 ? e.text.slice(0, 600) + " …" : e.text}`).join("\n\n");
+  }
+
+  /** Who decides when a limit trips: a model, the human, or nobody (limits just hold). */
+  get moderator(): Moderator | undefined {
+    return this.mod;
+  }
+
+  setModerator(m: Moderator | undefined): void {
+    this.mod = m;
+  }
+
+  /** `/mod`: "off", "you", "auto", or an OpenRouter model id. */
+  useModerator(spec: string): void {
+    const { ui } = this.opts;
+    this.mod = moderatorFor(spec, { ask: ui.askLimit?.bind(ui), status: (l) => ui.status(l) });
   }
 
   /** Two seats waking each other with short replies, again and again: an echo, not a discussion. */
@@ -863,8 +957,9 @@ export class Room {
         : "[room]: Parallel discussion round: every seat answers at once and file changes are refused this round.\n\n";
     const desk = this.deskNotes.get(name);
     this.deskNotes.delete(name);
-    const cut = this.cutNotes.get(name);
+    const cut = [this.cutNotes.get(name), this.modNotes.get(name)].filter(Boolean).join("\n\n");
     this.cutNotes.delete(name);
+    this.modNotes.delete(name);
     return (
       preamble +
       note +
@@ -961,7 +1056,7 @@ export class Room {
 
   async runTurn(
     name: string,
-    how: { emit?: (ev: SeatEvent) => void; parallel?: boolean; cancelled?: () => boolean } = {},
+    how: { emit?: (ev: SeatEvent) => void; parallel?: boolean; cancelled?: () => boolean; after?: Promise<void> } = {},
   ): Promise<Entry | undefined> {
     const { ui } = this.opts;
     if (!this.seats.has(name)) throw new Error(`no such seat: ${name}`);
@@ -974,6 +1069,7 @@ export class Room {
     this.posts.delete(name);
     const headBefore = this.useGit ? await headSha(this.opts.cwd).catch(() => undefined) : undefined;
     const result = await this.collectTurn(name, prompt, how.emit ?? ((ev) => ui.seatEvent(name, ev)));
+    await how.after;
     const entry = this.recordTurn(name, result);
     this.state.cursors[name] = this.seenThrough(name, Math.max(snapshot, this.reading.get(name) ?? 0));
     this.reading.delete(name);
@@ -1136,16 +1232,23 @@ export class Room {
   }
 
   /** Post now, mid-turn. Tags on its first or last line wake seats as a reply's would. */
-  private post(seat: string, text: string): string {
+  private async post(seat: string, text: string): Promise<string> {
     if (!this.active.has(seat)) throw new Error("post works during your turn only; reply normally instead");
     if (text === PASS) return "Not posted: passing is for your final reply.";
     const limit = this.opts.postLimit ?? 3;
     const gap = this.opts.postGapMs ?? 5000;
     const mine = this.posts.get(seat) ?? { count: 0, at: 0, text: "" };
-    if (mine.count >= limit) {
-      throw new Error(`Not posted: ${limit} posts a turn is the limit. Put the rest in your final reply.`);
-    }
     if (text === mine.text) throw new Error("Not posted: you just posted that.");
+    if (mine.count >= limit) {
+      const refused = `Not posted: ${limit} posts a turn is the limit. Put the rest in your final reply.`;
+      if (!this.moderator) throw new Error(refused);
+      const v = await this.moderator.decide({ kind: "post", from: seat, detail: `${mine.count} posts this turn (limit ${limit})`, recent: this.recent(), text });
+      const line = `moderator (${v.by}): ${v.verdict} a post from ${seat} past its limit: ${v.reason}`;
+      this.transcript.append("room", "system", line);
+      this.opts.ui.status(line);
+      if (v.verdict === "hold") throw new Error(`${refused} (The moderator held it: ${v.reason})`);
+      if (!this.active.has(seat)) throw new Error("post works during your turn only; reply normally instead");
+    }
     const wait = mine.at + gap - Date.now();
     if (wait > 0) throw new Error(`Not posted: one post every ${Math.round(gap / 1000)}s; try again in ${Math.ceil(wait / 1000)}s, or keep working.`);
     this.posts.set(seat, { count: mine.count + 1, at: Date.now(), text });
