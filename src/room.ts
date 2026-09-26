@@ -7,6 +7,8 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { basename, join } from "node:path";
 import { ConfigError, validateSeatName } from "./config.js";
 import {
+  midMerge,
+  runCheck,
   commitsAhead,
   commitTurn,
   currentBranch,
@@ -94,6 +96,8 @@ export interface RoomOptions {
   shareMcp?: McpServerEntry[];
   /** Ignored paths a desk links from the main checkout (globs by name). Default: DEFAULT_DESK_LINKS; [] for none. */
   deskLinks?: string[];
+  /** For a new room: the landing check (see RoomState.landCheck). */
+  landCheck?: string;
   /** Serve the room's MCP tools (inbox, post, status, show, diff) to seats that take them. Default: true. */
   tools?: boolean;
   /** Seat factory, for tests. */
@@ -107,6 +111,8 @@ export interface RoomState {
   mode: RoomMode;
   /** Auto mode: tool calls no rule matches run without asking the human. */
   auto?: boolean;
+  /** A shell command that must pass in a seat's desk before its work lands (typecheck, tests). */
+  landCheck?: string | null;
   /** Who an untagged human message wakes: whoever spoke last (default), or every idle seat. */
   wake?: "last" | "all";
   /** Seat-to-seat wakes per thread; null for no limit. Default MAX_HANDOFFS. */
@@ -248,6 +254,10 @@ export class Room {
   private linked: string[] = [];
   /** The uncommitted files last reported, so the note is not repeated. */
   private lastDirty = "";
+  /** Seats whose landing found the trunk busy; they land once it is free. */
+  private readonly pendingLands = new Set<string>();
+  /** Seats untagged messages and @all leave alone for now; @seat still wakes them. */
+  readonly muted = new Set<string>();
 
   private constructor(readonly opts: RoomOptions) {
     for (const s of opts.seats) {
@@ -277,6 +287,7 @@ export class Room {
     this.state.mode ??= "sequential";
     if (opts.auto) this.state.auto = true;
     this.mod = opts.moderator;
+    if (opts.landCheck) this.state.landCheck ??= opts.landCheck;
     if (opts.wake) this.state.wake ??= opts.wake;
     if (opts.cap !== undefined) this.state.cap ??= opts.cap;
     for (const s of opts.seats) {
@@ -551,9 +562,9 @@ export class Room {
       }
     }
     let wanted: string[];
-    if (tags.all) wanted = this.activeSeats();
+    if (tags.all) wanted = this.activeSeats().filter((x) => !this.muted.has(x));
     else if (tags.seats.length) wanted = tags.seats;
-    else if (this.state.wake !== "last" || !this.lastSpeaker()) wanted = this.activeSeats();
+    else if (this.state.wake !== "last" || !this.lastSpeaker()) wanted = this.activeSeats().filter((x) => !this.muted.has(x));
     else wanted = [this.lastSpeaker()!];
     for (const t of wanted.filter((x) => this.background.has(x))) {
       ui.status(`${t} is working in the background; it reads this when it finishes (@${t}! to interrupt)`);
@@ -729,8 +740,10 @@ export class Room {
     void (async () => {
       try {
         // Anything the human changed is theirs, not the seat's. Under the trunk lock: another seat may be merging.
-        if (this.useDesks) await this.syncBase();
-        else if (this.useGit) await this.withTrunk(() => this.commitHumanChanges(`changes before ${seat}'s turn`));
+        if (this.useDesks) {
+          await this.syncBase();
+          await this.retryLands();
+        } else if (this.useGit) await this.withTrunk(() => this.commitHumanChanges(`changes before ${seat}'s turn`));
         if (t.cancelled) return;
         const { ui } = this.opts;
         const emit = (ev: SeatEvent) => (alongside && ui.sideEvent ? ui.sideEvent(seat, ev) : ui.seatEvent(seat, ev));
@@ -768,7 +781,7 @@ export class Room {
     const human = this.opts.human.toLowerCase();
     if (mentions.some((m) => m.toLowerCase() === human)) ui.status(`${from} asked for ${this.opts.human}`);
     mentions = mentions.filter((m) => m.toLowerCase() !== human);
-    if (all) mentions = [...new Set([...mentions, ...this.activeSeats().filter((s) => s !== from)])];
+    if (all) mentions = [...new Set([...mentions, ...this.activeSeats().filter((s) => s !== from && !this.muted.has(s))])];
     for (const m of mentions) {
       if (this.benched.has(m)) {
         ui.status(`${from} → ${m}, but ${m} is benched; @${m} to bring it back`);
@@ -862,6 +875,18 @@ export class Room {
 
   setModerator(m: Moderator | undefined): void {
     this.mod = m;
+  }
+
+  /** `/check`: the landing check, or null for none. */
+  setLandCheck(command: string | null): void {
+    this.state.landCheck = command;
+    this.saveState();
+  }
+
+  /** `/mute`: untagged messages and @all leave the seat alone; @seat still wakes it. */
+  setMuted(seat: string, on: boolean): void {
+    if (on) this.muted.add(seat);
+    else this.muted.delete(seat);
   }
 
   /** `/mod`: "off", "you", "auto", or an OpenRouter model id. */
@@ -1005,6 +1030,7 @@ export class Room {
       branch: this.state.branch,
       desk: this.state.desks?.[name],
       linked: this.linked,
+      landCheck: this.state.landCheck ?? undefined,
       tools: this.withTools.has(name),
       skills: this.withTools.has(name) ? (this.opts.skills?.length ?? 0) : 0,
     });
@@ -1218,11 +1244,29 @@ export class Room {
   }
 
   /** Merge a seat's branch into the trunk. A conflict leaves the work on its desk, and says so. */
-  private async mergeDesk(name: string): Promise<void> {
+  private async mergeDesk(name: string, o: { force?: boolean } = {}): Promise<void> {
     const desk = this.state.desks?.[name];
     const trunk = this.state.branch;
     if (!desk || !trunk) return;
     const { ui } = this.opts;
+    this.pendingLands.delete(name);
+    // The gate: the room's check has to pass in the desk before anything reaches the trunk.
+    const check = this.state.landCheck;
+    if (check && !o.force && (await commitsAhead(this.opts.cwd, trunk, desk.branch).catch(() => 0)) > 0) {
+      ui.status(`${name}: running the landing check (${check})`);
+      const r = await runCheck(desk.path, check);
+      if (!r.ok) {
+        const line = `${name}'s work did not land: the check \`${check}\` failed (${r.code ?? "error"}, ${r.seconds}s); it stays on ${desk.branch}`;
+        ui.status(line);
+        this.transcript.append("room", "system", `${line}\n${r.tail}`);
+        this.deskNotes.set(
+          name,
+          `[room]: Your landing was refused: \`${check}\` failed in your desk:\n\`\`\`\n${r.tail}\n\`\`\`\nFix it and land again.`,
+        );
+        return;
+      }
+      ui.status(`${name}: the check passed (${r.seconds}s)`);
+    }
     try {
       await this.withTrunk(async () => {
         const r = await mergeRef(this.trunkDir, desk.branch, name);
@@ -1232,7 +1276,10 @@ export class Room {
           this.transcript.append("room", "commit", line);
           await this.noteAhead();
         } else if (r.status === "busy") {
-          const line = `${name}'s work was not landed: the trunk is mid-merge (${fileList(r.files)}); it stays on ${desk.branch}, land it again once you finish there`;
+          // Queued: it lands by itself once the trunk is free.
+          this.pendingLands.add(name);
+          const why = r.merging ? `the trunk is mid-merge (${fileList(r.files)})` : `the trunk has uncommitted changes (${fileList(r.files)})`;
+          const line = `${name}'s work is waiting to land: ${why}; it lands by itself once that is finished`;
           ui.status(line);
           this.transcript.append("room", "system", line);
         } else if (r.status === "conflict") {
@@ -1248,14 +1295,23 @@ export class Room {
     }
   }
 
+  /** Landings that found the trunk busy, tried again once it is free. */
+  private async retryLands(): Promise<void> {
+    if (!this.pendingLands.size || (await midMerge(this.trunkDir))) return;
+    for (const name of [...this.pendingLands]) {
+      if (this.active.has(name)) continue;
+      await this.mergeDesk(name);
+    }
+  }
+
   /** The human's `/land`: commit what the seat left on its desk, as the seat, and merge it now. */
-  async land(name: string): Promise<boolean> {
+  async land(name: string, o: { force?: boolean } = {}): Promise<boolean> {
     const desk = this.state.desks?.[name];
     if (!desk) return false;
     if (this.active.has(name)) throw new Error(`${name} is mid-turn; land it after`);
     await commitTurn(desk.path, name, `${name}: uncommitted work`).catch(() => undefined);
-    this.transcript.append("room", "system", `${this.opts.human} landed ${name}'s work.`);
-    await this.mergeDesk(name);
+    this.transcript.append("room", "system", `${this.opts.human} landed ${name}'s work${o.force ? " (skipping the check)" : ""}.`);
+    await this.mergeDesk(name, o);
     this.saveState();
     return true;
   }
@@ -1329,7 +1385,13 @@ export class Room {
       const r = await mergeRef(this.trunkDir, base.branch!, this.opts.human);
       if (r.status === "busy") {
         // You are resolving something in the trunk: leave it, and try again next turn.
-        if (base.conflict !== `busy:${tip}`) ui.status(`the trunk is mid-merge (${fileList(r.files)}); your ${base.branch} comes in once you finish there`);
+        if (base.conflict !== `busy:${tip}`) {
+          ui.status(
+            r.merging
+              ? `the trunk is mid-merge (${fileList(r.files)}); your ${base.branch} comes in once you finish there`
+              : `the trunk has uncommitted changes (${fileList(r.files)}); your ${base.branch} comes in once they are committed or undone (in ${this.trunkDir})`,
+          );
+        }
         base.conflict = `busy:${tip}`;
         this.saveState();
         return;
@@ -1504,6 +1566,8 @@ export class Room {
       `mode ${this.state.mode}; untagged messages wake ${this.state.wake === "last" ? "whoever spoke last" : "everyone"}; ` +
         `seat-to-seat wakes per thread: ${cap === null ? "no limit" : cap}` +
         (this.useDesks ? `; trunk ${this.state.branch}` : "") +
+        (this.state.landCheck ? `; landing check: ${this.state.landCheck}` : "") +
+        (this.muted.size ? `; muted (untagged messages skip them): ${[...this.muted].join(", ")}` : "") +
         (this.state.base?.conflict
           ? this.state.base.conflict.startsWith("busy:")
             ? `\nthe trunk is mid-merge; ${this.opts.human}'s ${this.state.base.branch} comes in once they finish`

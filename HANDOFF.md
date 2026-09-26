@@ -25,7 +25,7 @@ Design", https://claude.ai/code/artifact/8624261e-8ed2-45ea-ad01-d8b06166e1e1
 | moderator: an OpenRouter model (or the human) decides when a limit trips | done; not tried against OpenRouter live |
 | menu (`room`): defaults, moderator key, skills & MCP sharing, past rooms, archive | done; checked in a pty |
 
-Tests: `pnpm install && pnpm test` in `packages/room`, 163 tests, run
+Tests: `pnpm install && pnpm test` in `packages/room`, 167 tests, run
 anywhere with Node 22+. The room is no longer in the root's npm workspace:
 it has its own `pnpm-lock.yaml` (pnpm 11, build scripts allowed in
 `pnpm-workspace.yaml`), its own `vitest.config.ts`, and a `room` job in CI
@@ -158,6 +158,25 @@ session when it changed. `scripts/stamp.mjs` writes `dist/build.json`;
   resolution; `syncBase` waits quietly, a landing says to land again.
 - The pid file carries the process start time (`ps -o lstart`), so a reused
   pid after a reboot does not keep a dead room open for prune.
+
+## Landing check, retries, skills walker, mute (2026-09-26)
+
+- `midMerge` says whether a merge is under way or tracked files are just
+  changed; messages say "mid-merge" only for the first. `porcelainPath`
+  parses `git status` lines by pattern (a trimmed first line broke column
+  parsing in `dirtyFiles` too).
+- `state.landCheck` (`/check`, `--land-check`, room file `landCheck`) runs
+  in the desk via `runCheck` before `mergeDesk` merges; failure goes to the
+  transcript and the seat's `deskNotes`. `/land <seat> --force` skips it.
+- A landing that finds the trunk busy is queued (`pendingLands`) and
+  `retryLands` lands it before a later turn once `midMerge` is clear.
+- `findSkills` walks deeper, into dot folders (not `.git`, trash, caches),
+  and inside skills; picks up plugin `commands/*.md` (kind "command");
+  adds `~/.codex/plugins` and `~/.grok`. Uses `withFileTypes`.
+- The pass paragraph now says most turns under wake-all should be a pass,
+  whatever the role (the web app's synthesizer role was overriding it).
+  `/mute` / `/unmute` (`Room.muted`) keep untagged messages and `@all` off
+  a seat.
 
 ## Emulating the harnesses in the cloud
 

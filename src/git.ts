@@ -110,7 +110,7 @@ export type MergeResult =
   | { status: "merged"; sha: string; commits: number; stat: string; files: string[] }
   | { status: "conflict"; files: string[] }
   /** A merge is already under way there (someone resolving a conflict), or tracked files are changed: not touched. */
-  | { status: "busy"; files: string[] };
+  | { status: "busy"; merging: boolean; files: string[] };
 
 /**
  * Merge `ref` into the branch checked out at `cwd`, fast-forwarding when it
@@ -120,7 +120,7 @@ export type MergeResult =
 export async function mergeRef(cwd: string, ref: string, author: string): Promise<MergeResult> {
   // Never start a merge over one in progress, or over changes: the abort below would throw away someone's resolution.
   const busy = await midMerge(cwd);
-  if (busy) return { status: "busy", files: busy };
+  if (busy) return { status: "busy", ...busy };
   const before = await git(cwd, ["rev-parse", "HEAD"]);
   const commits = await commitsAhead(cwd, before, ref);
   if (commits === 0) return { status: "up-to-date" };
@@ -220,7 +220,7 @@ export async function dirtyFiles(cwd: string): Promise<string[]> {
   return out
     .split("\n")
     .filter(Boolean)
-    .map((l) => l.slice(3).replace(/^"|"$/g, ""))
+    .map(porcelainPath)
     .filter((f) => !f.split("/").includes(".room"));
 }
 
@@ -240,7 +240,7 @@ export async function topLevel(cwd: string): Promise<string | undefined> {
  * A checkout someone is working in: a merge under way (MERGE_HEAD), or
  * tracked files changed. The paths involved, or undefined when it is clean.
  */
-export async function midMerge(cwd: string): Promise<string[] | undefined> {
+export async function midMerge(cwd: string): Promise<{ merging: boolean; files: string[] } | undefined> {
   const merging = await git(cwd, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]).then(
     () => true,
     () => false,
@@ -248,6 +248,33 @@ export async function midMerge(cwd: string): Promise<string[] | undefined> {
   const changed = (await git(cwd, ["status", "--porcelain", "--untracked-files=no"]).catch(() => ""))
     .split("\n")
     .filter(Boolean)
-    .map((l) => l.slice(3));
-  return merging || changed.length ? changed : undefined;
+    .map(porcelainPath);
+  return merging || changed.length ? { merging, files: changed } : undefined;
+}
+
+/** Run a shell command in a checkout: whether it passed, how long it took, and the tail of its output. */
+export async function runCheck(cwd: string, command: string, timeoutMs = 15 * 60_000): Promise<{ ok: boolean; seconds: number; tail: string; code?: number | string }> {
+  const started = Date.now();
+  const tail = (s: string) => s.trim().split("\n").slice(-30).join("\n");
+  try {
+    const r = await run("sh", ["-c", command], { cwd, timeout: timeoutMs, maxBuffer: 32 * 1024 * 1024 });
+    return { ok: true, seconds: Math.round((Date.now() - started) / 1000), tail: tail(`${r.stdout}\n${r.stderr}`) };
+  } catch (err) {
+    const e = err as { stdout?: string; stderr?: string; code?: number | string; killed?: boolean };
+    return {
+      ok: false,
+      seconds: Math.round((Date.now() - started) / 1000),
+      tail: tail(`${e.stdout ?? ""}\n${e.stderr ?? ""}`) || (e.killed ? "timed out" : String(err)),
+      code: e.killed ? "timeout" : e.code,
+    };
+  }
+}
+
+/**
+ * The path in a `git status --porcelain` line ("XY path", or "XY old -> new").
+ * Not by column: output is trimmed, so the first line can lose its leading space.
+ */
+function porcelainPath(line: string): string {
+  const path = line.replace(/^\s*[MADRCU?! ]{1,2}\s+/, "");
+  return (path.includes(" -> ") ? path.split(" -> ")[1] : path).replace(/^"|"$/g, "");
 }

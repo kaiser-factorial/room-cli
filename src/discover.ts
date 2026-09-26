@@ -3,9 +3,9 @@
  * with a SKILL.md) and MCP servers, read from each harness's own config.
  * The menu lists them; the room can share them with every seat.
  */
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync, type Dirent } from "node:fs";
 import { homedir } from "node:os";
-import { join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { parse } from "smol-toml";
 
 export interface Skill {
@@ -13,8 +13,11 @@ export interface Skill {
   description: string;
   /** Which harness's config it came from: claude, codex, gemini, hermes, or shared. */
   harness: string;
-  /** The folder holding its SKILL.md. */
+  /** The folder holding its SKILL.md (for a command, the folder holding it). */
   dir: string;
+  /** A plugin command: the .md file itself. */
+  file?: string;
+  kind?: "skill" | "command";
 }
 
 export interface McpServerEntry {
@@ -32,55 +35,87 @@ interface Where {
   cwd?: string;
 }
 
-/** Skill folders: `<root>/<name>/SKILL.md`, and in plugin trees any `skills/<name>/SKILL.md` a few levels down. */
+/**
+ * Skill folders (a SKILL.md, possibly with skills nested inside it) and, in
+ * plugin trees, plugin commands (`commands/<name>.md`), which carry
+ * instructions the same way.
+ */
 export function findSkills(o: Where = {}): Skill[] {
   const home = o.home ?? homedir();
   const cwd = o.cwd ?? process.cwd();
   const roots: Array<[string, string, number]> = [
-    ["claude", join(cwd, ".claude", "skills"), 0],
-    ["claude", join(home, ".claude", "skills"), 0],
-    ["claude", join(home, ".claude", "plugins"), 5],
-    ["codex", join(cwd, ".codex", "skills"), 0],
-    ["codex", join(home, ".codex", "skills"), 0],
-    ["gemini", join(home, ".gemini", "skills"), 0],
-    ["hermes", join(home, ".hermes", "skills"), 1],
-    ["shared", join(cwd, ".agents", "skills"), 0],
-    ["shared", join(home, ".agents", "skills"), 0],
-    ["shared", join(home, ".config", "room", "skills"), 0],
+    ["claude", join(cwd, ".claude", "skills"), 2],
+    ["claude", join(home, ".claude", "skills"), 2],
+    ["claude", join(home, ".claude", "plugins"), 8],
+    ["codex", join(cwd, ".codex", "skills"), 2],
+    ["codex", join(home, ".codex", "skills"), 2],
+    ["codex", join(home, ".codex", "plugins"), 8],
+    ["grok", join(home, ".grok"), 6],
+    ["gemini", join(home, ".gemini", "skills"), 2],
+    ["hermes", join(home, ".hermes", "skills"), 3],
+    ["shared", join(cwd, ".agents", "skills"), 2],
+    ["shared", join(home, ".agents", "skills"), 2],
+    ["shared", join(home, ".config", "room", "skills"), 2],
   ];
   const out: Skill[] = [];
   const seen = new Set<string>();
   for (const [harness, root, depth] of roots) {
-    for (const dir of skillDirs(root, depth)) {
+    const found = walkSkills(root, depth);
+    for (const dir of found.skills) {
       if (seen.has(dir)) continue;
       seen.add(dir);
       const meta = frontmatter(readFileSync(join(dir, "SKILL.md"), "utf8"));
-      out.push({ name: meta.name ?? dir.split(/[\\/]/).pop()!, description: meta.description ?? "", harness, dir });
+      out.push({ name: meta.name ?? basename(dir), description: meta.description ?? "", harness, dir });
+    }
+    for (const file of found.commands) {
+      if (seen.has(file)) continue;
+      seen.add(file);
+      const meta = frontmatter(readFileSync(file, "utf8"));
+      out.push({ name: basename(file, ".md"), description: meta.description ?? "", harness, dir: dirname(file), file, kind: "command" });
     }
   }
   return out;
 }
 
-function skillDirs(root: string, depth: number): string[] {
-  if (!isDir(root)) return [];
-  const found: string[] = [];
+/** Never worth walking into: version control, dependencies, trash, caches. */
+const SKIP = new Set([".git", "node_modules", ".trash", ".Trash", "trash", ".cache", "cache", "__pycache__", ".venv", "venv"]);
+
+function walkSkills(root: string, depth: number): { skills: string[]; commands: string[] } {
+  const skills: string[] = [];
+  const commands: string[] = [];
+  if (!isDir(root)) return { skills, commands };
   const walk = (dir: string, left: number) => {
-    let names: string[];
+    let entries: Dirent[];
     try {
-      names = readdirSync(dir);
+      entries = readdirSync(dir, { withFileTypes: true });
     } catch {
       return;
     }
-    for (const n of names) {
-      if (n.startsWith(".") || n === "node_modules") continue;
+    for (const e of entries) {
+      const n = e.name;
+      if (SKIP.has(n)) continue;
       const p = join(dir, n);
-      if (!isDir(p)) continue;
-      if (existsSync(join(p, "SKILL.md"))) found.push(p);
-      else if (left > 0) walk(p, left - 1);
+      // Only directories (a linked one counts); files are never stat'ed.
+      if (!e.isDirectory() && !(e.isSymbolicLink() && isDir(p))) continue;
+      if (existsSync(join(p, "SKILL.md"))) skills.push(p);
+      // A plugin's commands: each .md in a commands/ folder of a plugin tree.
+      if (n === "commands" && depth > 2) {
+        for (const f of safeList(p)) if (f.endsWith(".md") && !isDir(join(p, f))) commands.push(join(p, f));
+      }
+      // Skills can sit inside skills (a plugin shipping sub-skills), so keep walking either way.
+      if (left > 0) walk(p, left - 1);
     }
   };
   walk(root, depth);
-  return found.sort();
+  return { skills: skills.sort(), commands: commands.sort() };
+}
+
+function safeList(dir: string): string[] {
+  try {
+    return readdirSync(dir);
+  } catch {
+    return [];
+  }
 }
 
 function isDir(p: string): boolean {
@@ -159,6 +194,9 @@ export function harnessOf(command: string): string {
 
 /** A skill for a seat to read: its SKILL.md and the files beside it. */
 export function readSkill(skill: Skill, maxFiles = 50): string {
+  if (skill.file) {
+    return [`Command ${skill.name} (a ${skill.harness} plugin command), in ${skill.file}:`, "", readFileSync(skill.file, "utf8").trim()].join("\n");
+  }
   const body = readFileSync(join(skill.dir, "SKILL.md"), "utf8");
   const files: string[] = [];
   const walk = (dir: string) => {
@@ -187,7 +225,7 @@ export function searchSkills(all: Skill[], query?: string, max = 40): string {
   if (!all.length) return "No skills are shared in this room.";
   const line = (k: Skill) => {
     const d = k.description.replace(/\s+/g, " ").trim();
-    return `- ${k.name} (${k.harness}): ${d.length > 120 ? d.slice(0, 119) + "…" : d || "no description"}`;
+    return `- ${k.name} (${k.harness}${k.kind === "command" ? " command" : ""}): ${d.length > 120 ? d.slice(0, 119) + "…" : d || "no description"}`;
   };
   const words = (query ?? "").toLowerCase().split(/\s+/).filter(Boolean);
   if (!words.length) {

@@ -139,6 +139,7 @@ interface StartOptions {
   wake?: string;
   cap?: string;
   moderator?: string;
+  landCheck?: string;
   turnTimeout: string;
 }
 
@@ -154,6 +155,7 @@ function roomOptions(cmd: Command): Command {
     .option("--wake <who>", "who an untagged message wakes: last (whoever spoke last) or all")
     .option("--cap <n>", "seat-to-seat wakes per thread before the room pauses it (a number, or off)")
     .option("--moderator <who>", "who decides when a limit trips: auto (OpenRouter if OPENROUTER_API_KEY, else you), you, off, or an OpenRouter model id")
+    .option("--land-check <command>", "a command that must pass in a seat's desk before its work lands, e.g. \"pnpm typecheck && pnpm test\"")
     .option("--tui", "full-screen terminal UI: live seat boxes, a status bar, and the input always open")
     .option("--role <seat=role...>", "give seats roles from the web app's presets, e.g. --role grok=critic claude=implementer")
     .option("--turn-timeout <seconds>", "per-turn timeout", "600");
@@ -229,6 +231,7 @@ async function runRoom(name: string, lineupSeats: SeatConfig[], opts: StartOptio
     skills: saved.shareSkills === false ? [] : findSkills({ cwd }),
     shareMcp: found.filter((m) => saved.shareMcp?.includes(m.name)),
     deskLinks: saved.deskLinks,
+    landCheck: opts.landCheck ?? (opts.roomFile ? withConfig(() => loadRoomFile(opts.roomFile!)).landCheck : undefined),
   };
   const moderator = opts.moderator ?? saved.moderator ?? "auto";
   if (tui) {

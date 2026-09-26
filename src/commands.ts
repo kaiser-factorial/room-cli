@@ -16,7 +16,9 @@ export const COMMAND_HELP = `  /seats                 seats, modes, and what is 
   /mode <seat> [id]      show or set a seat's session mode
   /unbench <seat>        bring back a seat benched after failing (so does @seat)
   /sync                  bring the room's landed work into your branch (fast-forward; your checkout is never switched)
-  /land <seat>           merge a seat's desk into the trunk now (seats land their own with [land])
+  /check [cmd|off]       a command that must pass in a seat's desk before its work lands (e.g. pnpm typecheck && pnpm test)
+  /mute <seat>, /unmute   untagged messages and @all skip a muted seat; @seat still wakes it
+  /land <seat> [--force]           merge a seat's desk into the trunk now (seats land their own with [land])
   /bg <seat> <task>      the seat works on it in its desk while the room goes on
   /stop <seat>           cancel a seat's background work
   /perm <seat>           show a seat's policy
@@ -114,11 +116,26 @@ export async function runCommand(room: Room, text: string, out: (line: string) =
       if (!(await room.stopBackground(seat))) out(`  ${seat} is not working in the background`);
       return;
     }
-    case "/land": {
+    case "/check": {
+      const rest = text.trim().slice(cmd.length).trim();
+      if (rest === "off") room.setLandCheck(null);
+      else if (rest) room.setLandCheck(rest);
+      out(`  landing check: ${room.state.landCheck ?? "none (/check <command> sets one)"}`);
+      return;
+    }
+    case "/mute":
+    case "/unmute": {
       const [seat] = args;
-      if (!seat || !room.seatNames.includes(seat)) return out(`  usage: /land <seat>`);
+      if (seat && room.seatNames.includes(seat)) room.setMuted(seat, cmd === "/mute");
+      else if (seat) return out(`  no seat ${seat}`);
+      out(`  muted: ${[...room.muted].join(", ") || "nobody"}`);
+      return;
+    }
+    case "/land": {
+      const [seat, flag] = args;
+      if (!seat || !room.seatNames.includes(seat)) return out(`  usage: /land <seat> [--force]`);
       try {
-        if (!(await room.land(seat))) out(`  ${seat} has no desk (the room is not using desks)`);
+        if (!(await room.land(seat, { force: flag === "--force" }))) out(`  ${seat} has no desk (the room is not using desks)`);
       } catch (err) {
         out(`  ${(err as Error).message}`);
       }

@@ -75,12 +75,32 @@ project's `.claude/`, `.codex/`, `.agents/` skill folders; and for MCP
 servers in `~/.claude.json`, `.mcp.json`, `~/.codex/config.toml`, and
 `~/.gemini/settings.json`.
 
+- Skills are found at any depth (skills nested in skills, plugin folders
+  like `.claude/skills` inside a plugin), and plugin commands
+  (`commands/*.md`) are offered too; `~/.codex/plugins` and `~/.grok` are
+  searched as well.
 - **Skills** are shared with every seat by default, through the room's own
   MCP server: `skills` searches them (with no query, a count and a sample:
   a machine can have hundreds), `skill <name>` gives one in full with the
   paths of its files. So a skill set up only for Claude is usable by grok.
 - **MCP servers** you tick are handed to every seat at session start, except
   the harness whose config has it (it loads it itself).
+
+### A check before landing
+
+`/check pnpm typecheck && pnpm test` (or `--land-check`, or `landCheck` in
+a room file) sets a command that must pass in a seat's desk before its work
+lands. If it fails, nothing lands, the transcript keeps the tail of the
+output, and the seat gets it at the top of its next turn. `/land <seat>
+--force` skips it; `/check off` clears it. A landing that finds the trunk
+busy (you mid-merge, or changes of yours in it) is queued and lands by
+itself once the trunk is free.
+
+### Quieter rooms
+
+Every seat hears an untagged message, so seats are told most turns should
+be a `[pass]`, whatever their role. `/mute <seat>` goes further: untagged
+messages and `@all` skip it until `/unmute`, while `@seat` still reaches it.
 
 ### Cleaning up: `room prune`
 

@@ -79,6 +79,38 @@ describe("discovery", () => {
     expect(readSkill(pdf)).toContain("- forms.md");
   });
 
+  it("finds nested skills, skills under dot folders, deep plugin skills, plugin commands, and grok's; skips trash", () => {
+    const h = tmp("home");
+    const skill = (dir: string, name: string) => {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "SKILL.md"), `---\nname: ${name}\ndescription: ${name} things\n---\n`);
+    };
+    const plugin = join(h, ".claude", "plugins", "marketplaces", "vendor", "plugins", "pdf-viewer");
+    skill(join(plugin, "skills", "view-pdf"), "view-pdf");
+    skill(join(plugin, "skills", "view-pdf", "upstream"), "view-pdf-upstream");
+    skill(join(plugin, ".claude", "skills", "hidden"), "hidden");
+    skill(join(h, ".claude", "plugins", "a", "b", "c", "d", "e", "skills", "deep"), "deep");
+    skill(join(h, ".claude", "plugins", ".trash", "skills", "old"), "old");
+    mkdirSync(join(plugin, "commands"), { recursive: true });
+    writeFileSync(join(plugin, "commands", "fill-form.md"), "---\ndescription: Fill a PDF form\n---\nSteps.\n");
+    skill(join(h, ".codex", "plugins", "p", "skills", "cx"), "cx");
+    skill(join(h, ".grok", "skills", "gk"), "gk");
+    const found = findSkills({ home: h, cwd: tmp("cwd") });
+    expect(found.map((k) => `${k.harness}:${k.name}${k.kind === "command" ? "(command)" : ""}`).sort()).toEqual([
+      "claude:deep",
+      "claude:fill-form(command)",
+      "claude:hidden",
+      "claude:view-pdf",
+      "claude:view-pdf-upstream",
+      "codex:cx",
+      "grok:gk",
+    ]);
+    const cmd = found.find((k) => k.name === "fill-form")!;
+    expect(cmd.description).toBe("Fill a PDF form");
+    expect(readSkill(cmd)).toContain("Steps.");
+    expect(searchSkills(found, "pdf form")).toContain("- fill-form (claude command): Fill a PDF form");
+  });
+
   it("finds MCP servers in Claude's and Codex's configs", () => {
     const servers = findMcpServers({ home: home(), cwd: tmp("cwd") });
     expect(servers).toEqual([
@@ -255,6 +287,35 @@ describe("waking", () => {
   });
 });
 
+describe("mute", () => {
+  it("untagged messages and @all skip a muted seat; @seat still wakes it", async () => {
+    const fakes = new Map<string, ToolSeat>();
+    const room = await Room.open({
+      name: "m",
+      cwd: tmp("cwd"),
+      seats: ["a", "b"].map((name) => ({ name, adapter: "acp" as const, command: "x" })),
+      human: "Corina",
+      ui: { seatEvent() {}, askHuman: async () => "deny", status() {} },
+      git: false,
+      tools: false,
+      makeSeat: (c) => {
+        const f = new ToolSeat(c);
+        fakes.set(c.name, f);
+        return f as never;
+      },
+    });
+    await room.start();
+    room.setMuted("b", true);
+    await room.say("everyone?");
+    await room.say("@all really everyone?");
+    expect(fakes.get("b")!.prompts.length).toBe(0);
+    await room.say("@b just you");
+    expect(fakes.get("b")!.prompts.length).toBe(1);
+    expect(fakes.get("a")!.prompts.length).toBe(2);
+    await room.stop();
+  });
+});
+
 describe("resuming", () => {
   class Resumable extends ToolSeat {
     async resumeSession() {
@@ -403,8 +464,47 @@ describe("the trunk and your branch, edge cases", () => {
     // Your half-done resolution is still there, mid-merge.
     expect(readFileSync(join(room.trunkDir, "f.txt"), "utf8")).toBe("resolved half-way\n");
     expect(execFileSync("git", ["rev-parse", "-q", "--verify", "MERGE_HEAD"], { cwd: room.trunkDir, encoding: "utf8" }).trim()).not.toBe("");
-    expect(lines.some((l) => /^a's work was not landed: the trunk is mid-merge/.test(l))).toBe(true);
+    expect(lines.some((l) => /^a's work is waiting to land: the trunk is mid-merge .*; it lands by itself once that is finished$/.test(l))).toBe(true);
     expect(lines.some((l) => /^the trunk is mid-merge \(.*\); your main comes in once you finish there$/.test(l))).toBe(true);
+    // You finish the merge; the next turn lands a's queued work by itself.
+    execFileSync("git", ["-c", "user.name=h", "-c", "user.email=h@h", "commit", "-qam", "resolved"], { cwd: room.trunkDir });
+    await room.say("@a three");
+    expect(lines.some((l) => /^a landed 1 commit on room\/e/.test(l))).toBe(true);
+    expect(readFileSync(join(room.trunkDir, "new.txt"), "utf8")).toBe("x\n");
+    await room.stop();
+  });
+
+  it("says 'uncommitted changes', not 'mid-merge', when nobody is merging", async () => {
+    const { cwd, git, room, lines } = await deskRoom();
+    writeFileSync(join(room.trunkDir, "f.txt"), "edited by hand\n");
+    writeFileSync(join(cwd, "g.txt"), "g\n");
+    git("add", "g.txt");
+    git("commit", "-qm", "g");
+    await room.say("@a go");
+    expect(lines.some((l) => /^the trunk has uncommitted changes \(f\.txt\); your main comes in once they are committed or undone/.test(l))).toBe(true);
+    await room.stop();
+  });
+
+  it("the landing check gates a landing, tells the seat why, and /land --force skips it", async () => {
+    const { room, lines } = await deskRoom();
+    const deskA = room.seatCwd("a");
+    room.setLandCheck("test -f ok.txt || (echo 'ok.txt is missing'; exit 3)");
+    writeFileSync(join(deskA, "work.txt"), "w\n");
+    await room.land("a");
+    expect(lines.some((l) => /^a's work did not land: the check .* failed \(3, \d+s\)/.test(l))).toBe(true);
+    expect(existsSync(join(room.trunkDir, "work.txt"))).toBe(false);
+    await room.say("@a what happened?");
+    const seat = (room as unknown as { seats: Map<string, ToolSeat> }).seats.get("a")!;
+    expect(seat.prompts.at(-1)).toContain("[room]: Your landing was refused:");
+    expect(seat.prompts.at(-1)).toContain("ok.txt is missing");
+    writeFileSync(join(deskA, "ok.txt"), "");
+    await room.land("a");
+    expect(lines).toContain("a: the check passed (0s)");
+    expect(existsSync(join(room.trunkDir, "work.txt"))).toBe(true);
+    room.setLandCheck("false");
+    writeFileSync(join(deskA, "more.txt"), "m\n");
+    await room.land("a", { force: true });
+    expect(existsSync(join(room.trunkDir, "more.txt"))).toBe(true);
     await room.stop();
   });
 

@@ -119,6 +119,8 @@ export interface RoomFile {
   seats?: string[];
   modes?: Record<string, string>;
   roles?: Record<string, string>;
+  /** A command that must pass in a seat's desk before its work lands. */
+  landCheck?: string;
   policy?: Record<string, { allow?: string[]; ask?: string[]; deny?: string[] }>;
 }
 
@@ -134,6 +136,7 @@ export function loadRoomFile(path: string): RoomFile {
   out.seats = optStrArray(doc.seats, `${path}: seats`);
   out.modes = optStrMap(doc.modes, `${path}: modes`);
   out.roles = optStrMap(doc.roles, `${path}: roles`);
+  if (typeof doc.landCheck === "string") out.landCheck = doc.landCheck;
   if (doc.policy !== undefined) {
     if (typeof doc.policy !== "object" || doc.policy === null) throw new ConfigError(`${path}: policy must be a table`);
     out.policy = {};
