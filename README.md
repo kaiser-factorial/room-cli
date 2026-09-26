@@ -112,6 +112,12 @@ transcript (text compresses ~10×) and removes the desk worktrees; their
 branches stay in git, so no seat's work is lost, and `room resume` unpacks
 the transcript and recreates the desks.
 
+Seats' replies are rendered as markdown, in the REPL and the TUI alike:
+bold, italics, headings, bullets, quotes, links, `code`, file paths, and
+function names in a colour of their own, and fenced code blocks drawn as
+code. In the REPL a line appears once it is complete. `NO_COLOR` (or a
+pipe) keeps the raw text.
+
 ## The TUI
 
 `room start claude grok --tui` (also on `resume`) opens the room in a

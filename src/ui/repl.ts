@@ -6,6 +6,7 @@
  * Input goes through a line queue rather than readline's `question`, so
  * lines typed (or piped) while a turn is running are kept, not dropped.
  */
+import { MarkdownLines } from "./markdown.js";
 import readline from "node:readline";
 import type { HumanChoice } from "../permissions.js";
 import { COMMAND_HELP, runCommand } from "../commands.js";
@@ -169,6 +170,7 @@ export class ReplUI implements RoomUI {
   private readonly gutterLabel = new Map<string, string>();
   /** A seat's reply so far on its current line, while the human's prompt is on screen. */
   private readonly fgPartial = new Map<string, string>();
+  private readonly md = new Map<string, MarkdownLines>();
   /** Permission questions one at a time, whichever seat asks. */
   private asking: Promise<unknown> = Promise.resolve();
 
@@ -294,13 +296,13 @@ export class ReplUI implements RoomUI {
     else this.bgFlushKey(seat, seat, (t) => t);
     const parts = ((this.bgPartial.get(key) ?? "") + text).split("\n");
     this.bgPartial.set(key, parts.pop()!);
-    for (const p of parts) this.bgLine(seat, style(p));
+    for (const p of parts) this.bgLine(seat, key === seat ? this.mdFor(`${seat}#bg`).line(p) : style(p));
   }
 
   private bgFlushKey(seat: string, key: string, style: (t: string) => string): void {
     const rest = this.bgPartial.get(key);
     this.bgPartial.delete(key);
-    if (rest?.trim()) this.bgLine(seat, style(rest));
+    if (rest?.trim()) this.bgLine(seat, key === seat ? this.mdFor(`${seat}#bg`).line(rest) : style(rest));
   }
 
   private bgFlush(seat: string): void {
@@ -342,23 +344,10 @@ export class ReplUI implements RoomUI {
     }
     switch (ev.type) {
       case "text": {
-        const text = sanitizeForTerminal(ev.text);
-        // The human's prompt is up: write whole lines, so the prompt redraws below each one.
-        if (this.lines.prompting) {
-          const parts = ((this.fgPartial.get(seat) ?? "") + text).split("\n");
-          this.fgPartial.set(seat, parts.pop()!);
-          for (const line of parts) this.replyLine(seat, line);
-          break;
-        }
-        if (this.speaker !== seat) {
-          this.gap();
-          this.out.write(`${this.seatName(seat)}> `);
-          this.speaker = seat;
-          this.lineStart = false;
-        }
-        // Set before writing: a write that lands over the prompt resets it.
-        this.lineStart = text.endsWith("\n");
-        this.out.write(text);
+        // Whole lines, rendered as markdown: a line is styled once it is complete, and the prompt redraws below it.
+        const parts = ((this.fgPartial.get(seat) ?? "") + sanitizeForTerminal(ev.text)).split("\n");
+        this.fgPartial.set(seat, parts.pop()!);
+        for (const line of parts) this.replyLine(seat, this.mdFor(seat).line(line));
         break;
       }
       case "thought": {
@@ -386,6 +375,7 @@ export class ReplUI implements RoomUI {
         break;
       case "stop":
         this.flushReply(seat);
+        this.mdFor(seat).reset();
         for (const l of this.tools.unfinished(seat)) this.toolish(dim(this.toolLine(seat, l)));
         this.newline();
         this.speaker = undefined;
@@ -408,7 +398,14 @@ export class ReplUI implements RoomUI {
   private flushReply(seat: string): void {
     const rest = this.fgPartial.get(seat);
     this.fgPartial.delete(seat);
-    if (rest?.trim()) this.replyLine(seat, rest);
+    if (rest?.trim()) this.replyLine(seat, this.mdFor(seat).line(rest));
+  }
+
+  /** Each seat's markdown renderer: it knows whether that seat is inside a code block. */
+  private mdFor(seat: string): MarkdownLines {
+    let r = this.md.get(seat);
+    if (!r) this.md.set(seat, (r = new MarkdownLines(this.style)));
+    return r;
   }
 
   /** `· title` heads a call as `  · seat: title`; its other lines indent under it. */

@@ -8,6 +8,7 @@ import { Box, Static, Text, useInput } from "ink";
 import TextInput from "ink-text-input";
 import { useEffect, useState } from "react";
 import type { Block, Part, TuiStore } from "./store.js";
+import { renderMarkdown } from "../markdown.js";
 
 export interface SeatChip {
   name: string;
@@ -34,7 +35,7 @@ const colourOf = (chip?: SeatChip) => (chip?.colour !== undefined ? `ansi256(${c
 function PartView({ part }: { part: Part }) {
   if (part.type === "tool") return <Text dimColor>{part.line}</Text>;
   if (part.type === "thought") return <Text dimColor italic>{`thinking: ${part.text.replace(/\s+/g, " ").trim()}`}</Text>;
-  return <Text>{part.text.replace(/\n+$/, "")}</Text>;
+  return <Text>{renderMarkdown(part.text.replace(/\n+$/, ""))}</Text>;
 }
 
 /** Only the last `max` lines of a growing block, so a long reply does not push the input off screen. */
