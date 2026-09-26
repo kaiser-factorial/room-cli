@@ -31,6 +31,8 @@ export interface MenuContext {
   rooms: () => RoomSummary[];
   transcript: (cwd: string, name: string) => Entry[];
   archive: (cwd: string, name: string) => Promise<{ saved: number }>;
+  /** Archive every idle room in this directory. */
+  prune?: () => Promise<{ saved: number; rooms: number }>;
   save: (s: Settings) => void;
   saveKey: (key: string | undefined) => void;
   cwd: string;
@@ -255,6 +257,18 @@ export function Menu({ ctx, onDone }: { ctx: MenuContext; onDone: (r: MenuResult
           go("room");
         },
       })),
+      ...(ctx.prune && rooms.some((r) => r.cwd === ctx.cwd && (!r.archived || r.desks))
+        ? [
+            {
+              label: "Archive every idle room here (transcripts gzipped, worktrees removed, nothing lost)",
+              enter: () =>
+                void ctx.prune!().then(({ saved, rooms: n }) => {
+                  setRooms(ctx.rooms());
+                  setNote(`Archived ${n} room${n === 1 ? "" : "s"}; freed ${humanBytes(saved)}.`);
+                }),
+            } as Row,
+          ]
+        : []),
       { label: "Back", enter: () => go("home") },
     ];
     if (!rooms.length) body = <Text dimColor>No rooms yet.</Text>;

@@ -25,7 +25,7 @@ import { LineSource, ReplUI, runRepl } from "../src/ui/repl.js";
 import { render } from "ink";
 import { createElement } from "react";
 import { findMcpServers, findSkills } from "../src/discover.js";
-import { archiveRoom, listRooms, readTranscript } from "../src/history.js";
+import { archiveRoom, humanBytes, listRooms, pruneRooms, readTranscript } from "../src/history.js";
 import { applySecrets, hasSettings, loadSecrets, loadSettings, saveOpenRouterKey, saveSettings, type Settings } from "../src/settings.js";
 import { Menu, type MenuContext, type MenuResult } from "../src/ui/menu/menu.js";
 
@@ -290,6 +290,10 @@ async function runMenu(): Promise<void> {
     rooms: () => listRooms(cwd, { everywhere: true }),
     transcript: readTranscript,
     archive: archiveRoom,
+    prune: async () => {
+      const done = (await pruneRooms(cwd)).filter((r) => !r.skipped);
+      return { saved: done.reduce((n, r) => n + r.saved, 0), rooms: done.length };
+    },
     save: (s) => void saveSettings(s),
     saveKey: (k) => {
       saveOpenRouterKey(k);
@@ -309,6 +313,30 @@ async function runMenu(): Promise<void> {
     await runRoom(r.name, lineup([], undefined, Room.savedSeats(r.cwd, r.name)), { ...defaults, cwd: r.cwd });
   }
 }
+
+program
+  .command("prune [rooms...]")
+  .description("Archive idle rooms here: gzip transcripts, remove their worktrees (seats' uncommitted work is committed first)")
+  .option("--branches", "also delete branches whose work is already merged (desks into their trunk, a trunk into your branch)")
+  .option("--dry-run", "say what would happen, change nothing")
+  .action(async (names: string[], opts: { branches?: boolean; dryRun?: boolean }) => {
+    const reports = await pruneRooms(process.cwd(), { names, branches: opts.branches, dryRun: opts.dryRun });
+    if (!reports.length) return console.log("no rooms here (.room/ is empty)");
+    let total = 0;
+    for (const r of reports) {
+      total += r.saved;
+      if (r.skipped) {
+        console.log(`${r.room}: skipped, ${r.skipped}`);
+        continue;
+      }
+      const parts = [opts.dryRun ? "would archive" : `archived, freed ${humanBytes(r.saved)}`];
+      if (r.deleted.length) parts.push(`${opts.dryRun ? "would delete" : "deleted"} ${r.deleted.join(", ")}`);
+      if (r.kept.length) parts.push(`kept ${r.kept.join("; ")}`);
+      console.log(`${r.room}: ${parts.join("; ")}`);
+    }
+    if (!opts.dryRun) console.log(`freed ${humanBytes(total)} in all; room resume <name> brings a room back`);
+    if (!opts.branches) console.log("(branches kept; --branches deletes the ones already merged)");
+  });
 
 program
   .command("menu", { isDefault: true })

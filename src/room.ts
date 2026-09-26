@@ -3,7 +3,7 @@
  * The UI is injected so the REPL, tests, and a later TUI share this code.
  */
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { ConfigError, validateSeatName } from "./config.js";
 import {
@@ -124,7 +124,7 @@ export interface RoomState {
    * sha then), brought into the trunk as it moves; \`seen\` is its tip the room
    * last looked at. The trunk has its own worktree; your checkout stays yours.
    */
-  base?: { branch?: string; sha: string; seen?: string };
+  base?: { branch?: string; sha: string; seen?: string; conflict?: string };
   /** A hash of the instructions each seat was last given, so a resumed seat is told when they change. */
   preambles?: Record<string, string>;
   modes: Record<string, string>;
@@ -457,6 +457,8 @@ export class Room {
     this.saveState();
     if (this.state.auto) ui.status("auto: tool calls run without asking, except your deny and ask rules (/auto off)");
     recordRoom(this.opts.cwd, this.opts.name);
+    // So prune (and the menu) know this room is open.
+    writeFileSync(join(this.stateDir, "pid"), String(process.pid));
     if (this.transcript.entries.length === 0) {
       this.transcript.append(
         "room",
@@ -1007,7 +1009,8 @@ export class Room {
       skills: this.withTools.has(name) ? (this.opts.skills?.length ?? 0) : 0,
     });
     // A resumed seat keeps the instructions its session began with; when the room's have changed since, it gets the new ones.
-    const hash = createHash("sha1").update(instructions).digest("hex").slice(0, 12);
+    // Hashed without the skill count, which moves whenever a skill is installed anywhere.
+    const hash = createHash("sha1").update(instructions.replace(/shares \d+ skills?/g, "shares skills")).digest("hex").slice(0, 12);
     const had = this.state.preambles?.[name];
     (this.state.preambles ??= {})[name] = hash;
     const preamble = first
@@ -1300,32 +1303,43 @@ export class Room {
     if (!tip) {
       if (base.seen !== "gone") ui.status(`your branch ${base.branch} is gone; the trunk carries on from where it was`);
       base.seen = "gone";
+      this.saveState();
       return;
     }
-    if (tip === base.seen) return;
-    const previous = base.seen ?? base.sha;
-    base.seen = tip;
-    this.saveState();
-    if (await isAncestor(this.trunkDir, tip, "HEAD")) return;
-    if (!(await isAncestor(this.opts.cwd, previous, tip))) {
+    // Up to date, unless a merge is still owed: a conflict is retried every turn until it goes in.
+    if (tip === base.seen && !base.conflict) return;
+    const known = base.seen && base.seen !== "gone" ? base.seen : base.sha;
+    const settle = (conflict?: string) => {
+      base.seen = tip;
+      base.conflict = conflict;
+      this.saveState();
+    };
+    if (await isAncestor(this.trunkDir, tip, "HEAD")) return settle();
+    if (tip !== base.conflict && !(await isAncestor(this.opts.cwd, known, tip))) {
       const line = `your branch ${base.branch} was rewritten (rebased or reset) since the room last saw it; the room will not merge it. To bring it in: cd ${this.trunkDir} && git merge ${base.branch}`;
       ui.status(line);
       this.transcript.append("room", "system", line);
-      return;
+      return settle();
     }
     await this.withTrunk(async () => {
       const r = await mergeRef(this.trunkDir, base.branch!, this.opts.human);
+      if (r.status === "conflict") {
+        // Said once per tip of your branch; retried quietly until it merges.
+        if (base.conflict !== tip) {
+          const line =
+            `${this.opts.human}'s ${base.branch} conflicts with ${this.state.branch} in ${fileList(r.files)}, so the room did not bring it in. ` +
+            `To resolve: cd ${this.trunkDir} && git merge ${base.branch}`;
+          ui.status(line);
+          this.transcript.append("room", "system", line);
+        }
+        return settle(tip);
+      }
       if (r.status === "merged") {
         const line = `${this.opts.human}'s ${base.branch} came into ${this.state.branch}: ${r.commits} commit${r.commits === 1 ? "" : "s"}, ${r.stat} (${fileList(r.files)})`;
         ui.status(line);
         this.transcript.append("room", "commit", line);
-      } else if (r.status === "conflict") {
-        const line =
-          `${this.opts.human}'s ${base.branch} conflicts with ${this.state.branch} in ${fileList(r.files)}, so the room did not bring it in. ` +
-          `To resolve: cd ${this.trunkDir} && git merge ${base.branch}`;
-        ui.status(line);
-        this.transcript.append("room", "system", line);
       }
+      settle();
     });
   }
 
@@ -1478,7 +1492,8 @@ export class Room {
       ...rows,
       `mode ${this.state.mode}; untagged messages wake ${this.state.wake === "last" ? "whoever spoke last" : "everyone"}; ` +
         `seat-to-seat wakes per thread: ${cap === null ? "no limit" : cap}` +
-        (this.useDesks ? `; trunk ${this.state.branch}` : ""),
+        (this.useDesks ? `; trunk ${this.state.branch}` : "") +
+        (this.state.base?.conflict ? `\n${this.opts.human}'s ${this.state.base.branch} conflicts with the trunk and has not come in yet` : ""),
     ].join("\n");
   }
 
@@ -1575,6 +1590,7 @@ export class Room {
     await Promise.all([...this.seats.values()].map((s) => s.stop().catch(() => undefined)));
     await Promise.race([Promise.allSettled(running), new Promise((r) => setTimeout(r, 2000))]);
     await this.mcp?.stop();
+    rmSync(join(this.stateDir, "pid"), { force: true });
     this.saveState();
   }
 

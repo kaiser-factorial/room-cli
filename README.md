@@ -82,6 +82,17 @@ servers in `~/.claude.json`, `.mcp.json`, `~/.codex/config.toml`, and
 - **MCP servers** you tick are handed to every seat at session start, except
   the harness whose config has it (it loads it itself).
 
+### Cleaning up: `room prune`
+
+Every room keeps worktrees (its trunk and a desk per seat) until you
+archive it. `room prune` archives every idle room here: transcripts
+gzipped, worktrees removed, and each seat's uncommitted work committed to
+its branch first, so nothing is lost. A room that is open right now is
+skipped. `--branches` also deletes branches whose work is already merged
+(a desk into its trunk, a trunk into your branch); anything unmerged is
+kept and listed. `--dry-run` says what it would do. `room resume <name>`
+brings a pruned room back. The menu's Past rooms has the same.
+
 ### Desks can build
 
 A desk is a fresh checkout, so it lacks whatever your checkout has that

@@ -3,6 +3,7 @@
  * servers found in the harnesses' configs, past rooms and archiving.
  */
 import { execFileSync } from "node:child_process";
+import { readFileSync, symlinkSync } from "node:fs";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,7 +11,7 @@ import { render } from "ink-testing-library";
 import { afterEach, describe, expect, it } from "vitest";
 import { findMcpServers, findSkills, frontmatter, harnessOf, readSkill, searchSkills, type Skill } from "../src/discover.js";
 import { linkIgnored } from "../src/git.js";
-import { archiveRoom, listRooms, readTranscript, recordRoom } from "../src/history.js";
+import { archiveRoom, isRunning, listRooms, pruneRooms, readTranscript, recordRoom } from "../src/history.js";
 import { Room, type RoomUI } from "../src/room.js";
 import { applySecrets, loadSecrets, loadSettings, maskKey, saveOpenRouterKey, saveSettings } from "../src/settings.js";
 import { Transcript } from "../src/transcript.js";
@@ -317,6 +318,100 @@ describe("resuming", () => {
       makeSeat: (c) => new ToolSeat(c) as never,
     });
     await expect(room.start()).rejects.toThrow(/your checkout is on room\/r, the room's trunk .* Check out your own branch/);
+  });
+});
+
+describe("the trunk and your branch, edge cases", () => {
+  async function deskRoom() {
+    const cwd = tmp("repo");
+    const git = (...a: string[]) => execFileSync("git", ["-c", "user.name=h", "-c", "user.email=h@h", ...a], { cwd, encoding: "utf8" }).trim();
+    git("init", "-q", "-b", "main");
+    writeFileSync(join(cwd, "f.txt"), "seed\n");
+    git("add", "f.txt");
+    git("commit", "-q", "-m", "seed");
+    const lines: string[] = [];
+    const room = await Room.open({
+      name: "e",
+      cwd,
+      seats: [{ name: "a", adapter: "acp", command: "x" }],
+      human: "Corina",
+      ui: { seatEvent() {}, askHuman: async () => "deny", status: (l) => lines.push(l) },
+      tools: false,
+      makeSeat: (c) => new ToolSeat(c) as never,
+    });
+    await room.start();
+    return { cwd, git, room, lines };
+  }
+
+  it("a branch that goes away and comes back is picked up again, not taken for a rewrite", async () => {
+    const { git, room, lines } = await deskRoom();
+    git("checkout", "-q", "-b", "side");
+    git("branch", "-D", "main");
+    await room.say("@a one");
+    expect(lines).toContain("your branch main is gone; the trunk carries on from where it was");
+    git("checkout", "-q", "-b", "main");
+    writeFileSync(join(room.opts.cwd, "g.txt"), "back\n");
+    git("add", "g.txt");
+    git("commit", "-q", "-m", "back");
+    await room.say("@a two");
+    expect(lines.some((l) => /rewritten/.test(l))).toBe(false);
+    expect(lines.some((l) => /^Corina's main came into room\/e: 1 commit/.test(l))).toBe(true);
+    await room.stop();
+  });
+
+  it("a conflict is said once, retried each turn, and goes in once resolved", async () => {
+    const { cwd, git, room, lines } = await deskRoom();
+    // The trunk changes f.txt one way (as a landing would), your branch another.
+    writeFileSync(join(room.trunkDir, "f.txt"), "trunk\n");
+    execFileSync("git", ["-c", "user.name=a", "-c", "user.email=a@a", "commit", "-qam", "trunk side"], { cwd: room.trunkDir });
+    writeFileSync(join(cwd, "f.txt"), "mine\n");
+    git("commit", "-qam", "mine");
+    await room.say("@a one");
+    await room.say("@a two");
+    expect(lines.filter((l) => /conflicts with room\/e/.test(l)).length).toBe(1);
+    expect(room.state.base?.conflict).toBeDefined();
+    // You resolve by making your branch agree; the next turn brings it in.
+    writeFileSync(join(cwd, "f.txt"), "trunk\n");
+    git("commit", "-qam", "agree");
+    await room.say("@a three");
+    expect(room.state.base?.conflict).toBeUndefined();
+    expect(readFileSync(join(room.trunkDir, "f.txt"), "utf8")).toBe("trunk\n");
+    await room.stop();
+  });
+
+  it("archive commits a seat's unfinished work before removing its desk, and does not count linked folders", async () => {
+    const { cwd, git, room } = await deskRoom();
+    const desk = room.seatCwd("a");
+    writeFileSync(join(desk, "wip.txt"), "half done\n");
+    mkdirSync(join(cwd, "big"), { recursive: true });
+    writeFileSync(join(cwd, "big", "blob"), "x".repeat(200_000));
+    symlinkSync(join(cwd, "big"), join(desk, "linked"));
+    expect(isRunning(cwd, "e")).toBe(true);
+    await room.stop();
+    expect(isRunning(cwd, "e")).toBe(false);
+    const { saved } = await archiveRoom(cwd, "e");
+    expect(saved).toBeLessThan(150_000);
+    expect(existsSync(desk)).toBe(false);
+    expect(existsSync(room.trunkDir)).toBe(false);
+    expect(git("show", "desk/e/a:wip.txt")).toBe("half done");
+    expect(git("log", "-1", "--format=%an", "desk/e/a")).toBe("a");
+  });
+
+  it("prune archives idle rooms, deletes only merged branches, and skips an open room", async () => {
+    const { cwd, git, room } = await deskRoom();
+    expect((await pruneRooms(cwd))[0]).toMatchObject({ room: "e", skipped: "open right now" });
+    writeFileSync(join(room.seatCwd("a"), "new.txt"), "unlanded\n");
+    await room.stop();
+    const dry = await pruneRooms(cwd, { branches: true, dryRun: true });
+    expect(dry[0].deleted).toEqual(["room/e"]);
+    expect(dry[0].kept).toEqual(["desk/e/a (uncommitted work in its desk)"]);
+    expect(existsSync(room.seatCwd("a"))).toBe(true);
+    const [r] = await pruneRooms(cwd, { branches: true });
+    // a's desk now holds a commit the trunk lacks: kept. The trunk has nothing main lacks: deleted.
+    expect(r.kept).toEqual(["desk/e/a (1 commit not in room/e)"]);
+    expect(r.deleted).toEqual(["room/e"]);
+    expect(git("branch", "--list", "desk/e/a")).toContain("desk/e/a");
+    expect(existsSync(room.seatCwd("a"))).toBe(false);
   });
 });
 

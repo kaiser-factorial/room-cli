@@ -9,6 +9,7 @@ export default defineConfig({
   esbuild: { jsx: "automatic" },
   test: {
     include: ["test/**/*.test.{ts,tsx}"],
+    setupFiles: ["test/setup-env.ts"],
     env: { ROOM_CONFIG_DIR: mkdtempSync(join(tmpdir(), "room-config-")), OPENROUTER_API_KEY: "" },
   },
 });

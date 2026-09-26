@@ -10,10 +10,11 @@
  * resuming the room unpacks and recreates both.
  */
 import { execFile } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, closeSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, closeSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { gunzipSync, gzipSync } from "node:zlib";
+import { commitTurn, dirtyFiles } from "./git.js";
 import { configDir } from "./settings.js";
 import type { Entry } from "./transcript.js";
 
@@ -138,13 +139,16 @@ export function readTranscript(cwd: string, name: string): Entry[] {
 }
 
 /**
- * Shrink a finished room: gzip its transcript, remove its desk worktrees
- * (their branches stay). `room resume` brings both back.
+ * Shrink a finished room: gzip its transcript and remove its worktrees
+ * (desks and trunk). A seat's uncommitted work is committed to its branch
+ * first, as the seat, so nothing is lost; branches stay. `room resume`
+ * brings it all back.
  */
-export async function archiveRoom(cwd: string, name: string): Promise<{ saved: number }> {
+export async function archiveRoom(cwd: string, name: string): Promise<{ saved: number; kept: string[] }> {
   const dir = join(cwd, ".room", name);
   const plain = join(dir, "transcript.jsonl");
   let saved = 0;
+  const kept: string[] = [];
   if (existsSync(plain)) {
     const raw = readFileSync(plain);
     const packed = gzipSync(raw);
@@ -153,23 +157,110 @@ export async function archiveRoom(cwd: string, name: string): Promise<{ saved: n
     saved += raw.length - packed.length;
   }
   const desksDir = join(dir, "desks");
-  if (existsSync(desksDir)) {
-    for (const n of readdirSync(desksDir)) {
-      const p = join(desksDir, n);
-      saved += await du(p);
-      await run("git", ["worktree", "remove", "--force", p], { cwd }).catch(() => rmSync(p, { recursive: true, force: true }));
+  const trees: Array<{ path: string; seat?: string }> = existsSync(desksDir)
+    ? readdirSync(desksDir).map((n) => ({ path: join(desksDir, n), seat: n }))
+    : [];
+  if (existsSync(join(dir, "trunk", ".git"))) trees.push({ path: join(dir, "trunk") });
+  for (const t of trees) {
+    if (!existsSync(join(t.path, ".git"))) {
+      rmSync(t.path, { recursive: true, force: true });
+      continue;
     }
-    await run("git", ["worktree", "prune"], { cwd }).catch(() => undefined);
+    if (t.seat) {
+      await commitTurn(t.path, t.seat, `${t.seat}: uncommitted work, kept when the room was archived`).catch(() => undefined);
+    } else if ((await dirtyFiles(t.path)).length) {
+      // The trunk mid-merge (you resolving a conflict): leave it for you.
+      kept.push(t.path);
+      continue;
+    }
+    saved += du(t.path);
+    await run("git", ["worktree", "remove", "--force", t.path], { cwd }).catch(() => rmSync(t.path, { recursive: true, force: true }));
   }
-  return { saved };
+  await run("git", ["worktree", "prune"], { cwd }).catch(() => undefined);
+  return { saved, kept };
 }
 
-async function du(p: string): Promise<number> {
+/** Whether a room is open right now (its process wrote a pid file and is alive). */
+export function isRunning(cwd: string, name: string): boolean {
+  const pidFile = join(cwd, ".room", name, "pid");
+  if (!existsSync(pidFile)) return false;
+  const pid = Number(readFileSync(pidFile, "utf8"));
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export interface PruneReport {
+  room: string;
+  skipped?: string;
+  saved: number;
+  deleted: string[];
+  kept: string[];
+}
+
+/**
+ * Archive every idle room here (or the named ones), and with `branches`,
+ * delete the branches whose work is already elsewhere: a desk branch merged
+ * into its trunk, a trunk merged into the branch it started from. Nothing
+ * unmerged is ever deleted; it is listed instead.
+ */
+export async function pruneRooms(cwd: string, o: { names?: string[]; branches?: boolean; dryRun?: boolean } = {}): Promise<PruneReport[]> {
+  const rooms = listRooms(cwd).filter((r) => !o.names?.length || o.names.includes(r.name));
+  const out: PruneReport[] = [];
+  const git = (...a: string[]) => run("git", a, { cwd }).then((r) => r.stdout.trim());
+  for (const r of rooms) {
+    const report: PruneReport = { room: r.name, saved: 0, deleted: [], kept: [] };
+    out.push(report);
+    if (isRunning(cwd, r.name)) {
+      report.skipped = "open right now";
+      continue;
+    }
+    if (!o.dryRun) {
+      const a = await archiveRoom(cwd, r.name);
+      report.saved = a.saved;
+      report.kept.push(...a.kept.map((p) => `${p} (has changes of yours; left in place)`));
+    }
+    if (!o.branches) continue;
+    const state = JSON.parse(readFileSync(join(cwd, ".room", r.name, "state.json"), "utf8")) as { branch?: string; base?: { branch?: string } };
+    const trunk = state.branch ?? `room/${r.name}`;
+    const current = await git("rev-parse", "--abbrev-ref", "HEAD").catch(() => "");
+    const desks = (await git("for-each-ref", "--format=%(refname:short)", `refs/heads/desk/${r.name}/`).catch(() => "")).split("\n").filter(Boolean);
+    const gone = async (branch: string, into: string) => {
+      const desk = join(cwd, ".room", r.name, "desks", branch.split("/").pop()!);
+      if (branch.startsWith("desk/") && existsSync(join(desk, ".git")) && (await dirtyFiles(desk)).length) {
+        report.kept.push(`${branch} (uncommitted work in its desk)`);
+        return;
+      }
+      const ahead = Number(await git("rev-list", "--count", `${into}..${branch}`).catch(() => "-1"));
+      if (ahead !== 0) {
+        report.kept.push(`${branch} (${ahead < 0 ? "not checked" : `${ahead} commit${ahead === 1 ? "" : "s"} not in ${into}`})`);
+        return;
+      }
+      if (branch === current) {
+        report.kept.push(`${branch} (checked out)`);
+        return;
+      }
+      if (!o.dryRun) await git("branch", "-D", branch);
+      report.deleted.push(branch);
+    };
+    for (const d of desks) await gone(d, trunk);
+    if (state.base?.branch && (await git("rev-parse", "--verify", "-q", trunk).catch(() => ""))) await gone(trunk, state.base.branch);
+  }
+  if (!o.dryRun) await run("git", ["worktree", "prune"], { cwd }).catch(() => undefined);
+  return out;
+}
+
+/** Bytes under a folder, not following links (a desk links node_modules, which is not the desk's). */
+function du(p: string): number {
   let total = 0;
   const walk = (d: string) => {
     for (const n of readdirSync(d)) {
       const q = join(d, n);
-      const st = statSync(q, { throwIfNoEntry: false });
+      const st = lstatSync(q, { throwIfNoEntry: false });
       if (!st) continue;
       if (st.isDirectory()) walk(q);
       else total += st.size;

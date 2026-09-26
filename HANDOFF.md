@@ -25,7 +25,7 @@ Design", https://claude.ai/code/artifact/8624261e-8ed2-45ea-ad01-d8b06166e1e1
 | moderator: an OpenRouter model (or the human) decides when a limit trips | done; not tried against OpenRouter live |
 | menu (`room`): defaults, moderator key, skills & MCP sharing, past rooms, archive | done; checked in a pty |
 
-Tests: `pnpm install && pnpm test` in `packages/room`, 152 tests, run
+Tests: `pnpm install && pnpm test` in `packages/room`, 161 tests, run
 anywhere with Node 22+. The room is no longer in the root's npm workspace:
 it has its own `pnpm-lock.yaml` (pnpm 11, build scripts allowed in
 `pnpm-workspace.yaml`), its own `vitest.config.ts`, and a `room` job in CI
@@ -135,6 +135,23 @@ are reported, never forced. `mergeDesk` lands into the trunk worktree;
 the preamble per seat (`state.preambles`) and re-sends it to a resumed
 session when it changed. `scripts/stamp.mjs` writes `dist/build.json`;
 `checkBuild` warns when the trunk lacks the build's commit.
+
+## Polish from agy's review (2026-09-26)
+
+- `syncBase`: a base that went away and came back falls back to
+  `base.sha` (no false "rewritten"); a conflicted merge is kept in
+  `base.conflict`, said once per tip, retried each turn until it merges,
+  and shown in `status`.
+- The preamble hash ignores the skill count, so installing a skill does not
+  re-send every seat its instructions.
+- Tests clear `GIT_AUTHOR_*` (test/setup-env.ts), so the suite passes when
+  a seat runs it inside its desk.
+- `archiveRoom` commits a seat's uncommitted desk work before removing the
+  worktree (desks no longer auto-commit), removes the trunk worktree too
+  unless you have changes in it, and measures sizes without following links.
+- Rooms write `.room/<name>/pid` while open. `room prune [--branches]
+  [--dry-run]` (`pruneRooms`) archives idle rooms and deletes only merged
+  branches.
 
 ## Emulating the harnesses in the cloud
 
