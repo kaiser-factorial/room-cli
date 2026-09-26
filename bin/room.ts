@@ -129,6 +129,8 @@ interface StartOptions {
   auto?: boolean;
   tui?: boolean;
   role?: string[];
+  wake?: string;
+  cap?: string;
   turnTimeout: string;
 }
 
@@ -141,9 +143,27 @@ function roomOptions(cmd: Command): Command {
     .option("--no-desks", "seats share one working directory instead of a worktree each")
     .option("--parallel", "start in parallel discussion mode")
     .option("--auto", "tool calls run without asking you, except deny and ask rules")
+    .option("--wake <who>", "who an untagged message wakes: last (whoever spoke last) or all")
+    .option("--cap <n>", "seat-to-seat wakes per thread before the room pauses it (a number, or off)")
     .option("--tui", "full-screen terminal UI: live seat boxes, a status bar, and the input always open")
     .option("--role <seat=role...>", "give seats roles from the web app's presets, e.g. --role grok=critic claude=implementer")
     .option("--turn-timeout <seconds>", "per-turn timeout", "600");
+}
+
+function wakeOpt(v: string | undefined): "last" | "all" | undefined {
+  if (v === undefined || v === "last" || v === "all") return v;
+  return withConfig(() => {
+    throw new ConfigError(`--wake takes last or all (got "${v}")`);
+  });
+}
+
+function capOpt(v: string | undefined): number | null | undefined {
+  if (v === undefined) return undefined;
+  if (v === "off") return null;
+  if (/^\d+$/.test(v)) return Number(v);
+  return withConfig(() => {
+    throw new ConfigError(`--cap takes a number or off (got "${v}")`);
+  });
 }
 
 /** `--role grok=critic`: the named seats' roles, over the roster's and the room file's. */
@@ -192,6 +212,8 @@ async function runRoom(name: string, lineupSeats: SeatConfig[], opts: StartOptio
       git: opts.git ? undefined : false,
       desks: opts.desks,
       auto: opts.auto,
+      wake: wakeOpt(opts.wake),
+      cap: capOpt(opts.cap),
       mode: opts.parallel ? "parallel" : undefined,
       turnTimeoutMs: Number(opts.turnTimeout) * 1000,
     });
@@ -215,6 +237,8 @@ async function runRoom(name: string, lineupSeats: SeatConfig[], opts: StartOptio
     git: opts.git ? undefined : false,
     desks: opts.desks,
     auto: opts.auto,
+    wake: wakeOpt(opts.wake),
+    cap: capOpt(opts.cap),
     mode: opts.parallel ? "parallel" : undefined,
     turnTimeoutMs: Number(opts.turnTimeout) * 1000,
   });
@@ -267,6 +291,8 @@ program
   .option("--no-desks", "seats share one working directory instead of a worktree each")
   .option("--parallel", "new rooms start in parallel discussion mode")
   .option("--auto", "new rooms start in auto mode: tool calls run without asking, except deny and ask rules")
+  .option("--wake <who>", "who an untagged message wakes in new rooms: last or all")
+  .option("--cap <n>", "seat-to-seat wakes per thread in new rooms (a number, or off)")
   .option("--turn-timeout <seconds>", "per-turn timeout", "600")
   .action((names: string[], opts: Omit<StartOptions, "cwd">) => {
     // stdout is the wire; anything else printed there corrupts it.
@@ -282,6 +308,8 @@ program
       git: opts.git ? undefined : false,
       desks: opts.desks,
       auto: opts.auto,
+      wake: wakeOpt(opts.wake),
+      cap: capOpt(opts.cap),
       mode: opts.parallel ? "parallel" : undefined,
       turnTimeoutMs: Number(opts.turnTimeout) * 1000,
       log: (line) => console.error(`room: ${line}`),

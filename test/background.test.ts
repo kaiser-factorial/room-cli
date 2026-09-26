@@ -91,6 +91,7 @@ async function openRoom(scripts: Record<string, Reply[]>, git = true) {
   const fakes = new Map<string, GateSeat>();
   const seats: SeatConfig[] = Object.keys(scripts).map((name) => ({ name, adapter: "acp", command: "fake" }));
   const room = await Room.open({
+    wake: "all",
     name: "bg",
     cwd,
     seats,
@@ -162,7 +163,7 @@ describe("background turns", () => {
     await room.say("hello");
     expect(lines).toContain("b → a, but a is working in the background; it reads this when it finishes");
     await room.say("@a are you there?");
-    expect(lines).toContain("a is working in the background; it reads this when it finishes (/stop a to cancel)");
+    expect(lines).toContain("a is working in the background; it reads this when it finishes (@a! to interrupt)");
     g.open();
     await room.background.get("a");
     await room.stop();

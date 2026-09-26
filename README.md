@@ -98,9 +98,12 @@ and not only on its summary:
 [grok]: One failure, in calc. Fixing the sign.
 [room]: grok tool: Edit calc.py (+1 -1)
 [grok]: Fixed. Re-running.
-``` Your message starts a round in roster order; a
-leading `@seat` sends it to that seat only; an empty line runs another round
-with nothing new. A seat replying `[pass]` is recorded as a pass. In a git
+```
+
+Your message posts at once, even while seats are working. An untagged
+message wakes whoever spoke last; `@a @b` wakes those seats, one after
+another; `@all` wakes everyone; an empty line runs everyone again with
+nothing new. A seat replying `[pass]` is recorded as a pass. In a git
 repo, each seat works in its own desk (below) and its work lands on the
 room's branch, so `git log` and `git blame` say who did what. State lives
 in `.room/<name>/` (transcript.jsonl, state.json, desks/), which the room
@@ -178,14 +181,25 @@ request the room never made, a non-JSON line) are shown once each, named.
 
 ### Who speaks next
 
-- **Sequential** (default): your message starts a round in roster order.
+- **Threads, not rounds.** Each message you send starts a thread. It
+  posts at once, and you can interject at any time. Who it wakes:
+  - untagged: whoever spoke last (`/wake all` or `--wake all` makes it
+    everyone);
+  - `@a @b` (anywhere in your message): those seats, one at a time, each
+    seeing the replies before it;
+  - `@all`: every idle seat;
+  - `@grok!`: interrupts grok now, even mid-turn or in the background.
+  A seat that is mid-turn is not woken again; your message is waiting in
+  what it reads next.
 - **Hand-offs:** a seat that writes `@name` on the first or last line of
-  its reply puts that seat next, ahead of the rest of the round. A mention
-  in the middle ("as @grok said") is a citation and does nothing, so a seat
-  cannot steer the room from inside its prose. `@<you>` is announced and
-  does not cut the other seats off. Mentions inside code do not count. At
-  most six extra turns per human message, so two seats cannot volley
-  forever.
+  its reply adds that seat to the END of its thread's queue, so `@claude
+  @grok` then claude tagging `@agy` runs grok, then agy. Nobody is queued
+  twice. A mention in the middle ("as @grok said") is a citation. `@<you>`
+  is announced. Mentions inside code do not count.
+- **Limits:** a thread allows 6 seat-to-seat wakes, then holds the rest;
+  `/cap +10` releases them, `/cap 20` or `/cap off` changes the limit
+  (`--cap` at start). Two seats trading short replies are paused; `@`
+  either to go on. `/seats` shows who is next and both settings.
 - **Passing:** a seat replying `[pass]` is recorded as a pass. An empty
   line runs another round, skipping any seat that passed and has seen
   nothing new since.

@@ -41,7 +41,7 @@ type Answer = "allow" | "always" | "deny" | "cancelled";
 
 /** The editor side: spawns `room acp`, records updates, answers permissions in order. */
 async function editor(rosterPath: string, args: string[] = []) {
-  const child = spawn(TSX, [BIN, "--roster", rosterPath, "acp", "a", "b", ...args], { stdio: ["pipe", "pipe", "pipe"] });
+  const child = spawn(TSX, [BIN, "--roster", rosterPath, "acp", "a", "b", "--wake", "all", ...args], { stdio: ["pipe", "pipe", "pipe"] });
   procs.push(child);
   let stderr = "";
   child.stderr!.on("data", (c: Buffer) => (stderr += c.toString()));

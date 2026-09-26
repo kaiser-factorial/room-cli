@@ -74,3 +74,26 @@ export function parseAddress(text: string, seats: string[]): { targets: string[]
   }
   return { targets, text: targets.length ? rest : text };
 }
+
+/**
+ * The seats a human message tags, anywhere in it: `@name`, `@all`, and
+ * `@name!` to interrupt that seat if it is busy. Tags inside code do not
+ * count. Order of first appearance.
+ */
+export function humanTags(text: string, seats: string[]): { seats: string[]; all: boolean; urgent: string[] } {
+  const stripped = text.replace(/```[\s\S]*?```/g, " ").replace(/`[^`\n]*`/g, " ");
+  const out = { seats: [] as string[], all: false, urgent: [] as string[] };
+  const re = /(?:^|[\s(,;:>"'*_])@([\w-]+)(!?)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(stripped))) {
+    if (m[1].toLowerCase() === "all") {
+      out.all = true;
+      continue;
+    }
+    const seat = seats.find((s) => s.toLowerCase() === m![1].toLowerCase());
+    if (!seat) continue;
+    if (!out.seats.includes(seat)) out.seats.push(seat);
+    if (m[2] && !out.urgent.includes(seat)) out.urgent.push(seat);
+  }
+  return out;
+}

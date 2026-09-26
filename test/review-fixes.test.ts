@@ -87,6 +87,7 @@ async function openRoom(scripts: Record<string, Reply[]>, extra: { ignoreCancel?
     },
   };
   const room = await Room.open({
+    wake: "all",
     name: "fix",
     cwd,
     seats,

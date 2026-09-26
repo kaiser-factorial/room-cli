@@ -1,6 +1,6 @@
 # room: handoff
 
-_Last updated 2026-09-25 (phase 4). Branch `feat/cli-room`, based on `feat/cli`._
+_Last updated 2026-09-26 (threads, step 1). Branch `feat/cli-room`, based on `feat/cli`._
 
 Design doc (six phases, findings per phase): Claude Docs "Joint Session CLI
 Design", https://claude.ai/code/artifact/8624261e-8ed2-45ea-ad01-d8b06166e1e1
@@ -18,9 +18,12 @@ Design", https://claude.ai/code/artifact/8624261e-8ed2-45ea-ad01-d8b06166e1e1
 | 4 room as an ACP agent + resume | done; works in Zed (2026-09-25) |
 | packaging: own pnpm package, `room` command | done; CI job `room` |
 | 5 Ink TUI (`--tui`) | first version; REPL stays the default |
-| 6 desks: a worktree per seat, landing on the trunk | done; background turns next |
+| 6 desks: a worktree per seat, landing on the trunk | done, with `[land]`/`/land`, background turns, `/auto` |
+| threads step 1: event loop replaces rounds | done: wake rules, `@all`, `@seat!`, queue-at-end tags, `/cap`, `/wake`, echo pause |
+| threads step 2: room MCP server (`inbox`, `post`, `status`, `show`, `diff`) | next |
+| threads step 3: urgent interrupts polish, posting rate limits | later |
 
-Tests: `pnpm install && pnpm test` in `packages/room`, 63 tests, run
+Tests: `pnpm install && pnpm test` in `packages/room`, 113 tests, run
 anywhere with Node 22+. The room is no longer in the root's npm workspace:
 it has its own `pnpm-lock.yaml` (pnpm 11, build scripts allowed in
 `pnpm-workspace.yaml`), its own `vitest.config.ts`, and a `room` job in CI
@@ -35,6 +38,19 @@ restart that reattaches every seat. `test/acp-server.test.ts` spawns
 `room acp` with fake seats and drives it as an editor: streaming,
 permissions forwarded to the editor, cancel, session modes, load and
 resume in a new process, a seat failing to start.
+
+## Threads (step 1)
+
+`room.ts` no longer runs rounds. `say()` posts at once and starts a
+`Thread {queue, answering, wakes, held, hops}`; `pump()` starts turns.
+Within a thread seats answer one at a time. Across threads turns run
+concurrently only with desks (or in parallel mode); in one shared
+directory a single turn runs at a time, so a second message queues behind
+the running seat. `route()` applies hand-offs: tag joins the end of the
+queue, no double queueing, mid-turn seats are not re-woken, the cap holds
+extra wakes (`/cap +n` releases), and short back-and-forth is paused.
+The REPL and TUI no longer await `say`; concurrent turns render through
+`RoomUI.sideEvent`. Legacy tests opt into `wake: "all"`.
 
 ## Emulating the harnesses in the cloud
 

@@ -9,6 +9,8 @@ import type { Room } from "./room.js";
 export const COMMAND_HELP = `  /seats                 seats, modes, and what is queued
   /parallel, /sequential room mode: all seats answer at once, or in turn
   /role <seat> [id|none]  give a seat a role from the web app's presets (/role alone lists them)
+  /cap [n|+n|off]        seat-to-seat wakes per thread before the room pauses it (+n lets a paused thread go on)
+  /wake last|all         who an untagged message wakes: whoever spoke last, or every idle seat
   /auto [on|off]         tool calls run without asking, except deny and ask rules
   /mode <seat> [id]      show or set a seat's session mode
   /unbench <seat>        bring back a seat benched after failing (so does @seat)
@@ -44,6 +46,22 @@ export async function runCommand(room: Room, text: string, out: (line: string) =
       }
       return;
     }
+    case "/cap": {
+      const [arg] = args;
+      if (!arg) return out(`  seat-to-seat cap: ${room.cap ?? "off"} per thread`);
+      if (arg === "off") room.setCap(null, true);
+      else if (/^\+\d+$/.test(arg)) room.setCap((room.cap ?? 0) + Number(arg.slice(1)), true);
+      else if (/^\d+$/.test(arg)) room.setCap(Number(arg), true);
+      else return out(`  usage: /cap <n>, /cap +<n>, or /cap off`);
+      out(`  seat-to-seat cap: ${room.cap ?? "off"} per thread`);
+      return;
+    }
+    case "/wake": {
+      const [arg] = args;
+      if (arg === "last" || arg === "all") room.setWake(arg);
+      out(`  untagged messages wake: ${room.state.wake === "all" ? "every idle seat" : "whoever spoke last"} (@name for one, @all for everyone)`);
+      return;
+    }
     case "/auto": {
       const arg = args[0];
       room.setAuto(arg === "on" ? true : arg === "off" ? false : !room.auto);
@@ -62,7 +80,8 @@ export async function runCommand(room: Room, text: string, out: (line: string) =
           (room.background.has(name) ? "  (background)" : "");
         out(`  ${name.padEnd(8)} mode ${mode.padEnd(12)} session ${room.state.sessions[name] ?? "-"}${benched}`);
       }
-      if (room.scheduler.pending.length) out(`  queued: ${room.scheduler.pending.join(", ")}`);
+      if (room.queued.length) out(`  next: ${room.queued.join(" → ")}`);
+      out(`  untagged messages wake: ${room.state.wake === "all" ? "every idle seat" : "whoever spoke last"}; seat-to-seat cap: ${room.cap ?? "off"}`);
       return;
     }
     case "/bg": {

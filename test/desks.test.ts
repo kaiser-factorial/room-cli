@@ -47,7 +47,7 @@ function ui() {
 async function open(cwd: string, state: string, extra: { mode?: "parallel" } = {}) {
   const seats = ["a", "b"].map((n) => fakeAcpSeat(n, [], state, { allow: ["edit"] }));
   const u = ui();
-  const room = await Room.open({ name: "d", cwd, seats, human: "Corina", ui: u, ...extra });
+  const room = await Room.open({ name: "d", cwd, seats, human: "Corina", ui: u, wake: "all", ...extra });
   await room.start();
   return { room, u };
 }

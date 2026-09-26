@@ -8,7 +8,7 @@ import { ConfigError, validateSeatName } from "./config.js";
 import { commitsAhead, commitTurn, ensureRoomBranch, ensureWorktree, headSha, headSubject, isRepo, mergeRef } from "./git.js";
 import { emptyPolicy, makeDecider, type Action, type HumanChoice, type Policy, type SeatPolicy } from "./permissions.js";
 import { BACKGROUND, buildPreamble, LAND, PASS, roleList, rolePrompt } from "./preamble.js";
-import { parseAddress, scanMentions, Scheduler } from "./scheduler.js";
+import { humanTags, parseAddress, scanMentions } from "./scheduler.js";
 import { describeError, withTimeout } from "./seat/acp.js";
 import { createSeat } from "./seat/index.js";
 import { pickAskMode } from "./seat/modes.js";
@@ -20,6 +20,8 @@ export interface RoomUI {
   seatEvent(seat: string, ev: SeatEvent): void;
   /** A background turn's events, live. Without it they go to `seatEvent`. */
   backgroundEvent?(seat: string, ev: SeatEvent): void;
+  /** A turn answering alongside another one, so the two do not split each other. Without it: `seatEvent`. */
+  sideEvent?(seat: string, ev: SeatEvent): void;
   askHuman(req: PermissionRequestView): Promise<HumanChoice>;
   status(line: string): void;
 }
@@ -48,6 +50,10 @@ export interface RoomOptions {
   mode?: RoomMode;
   /** Start in auto mode: tool calls no rule matches run without asking. A resumed room keeps its setting. */
   auto?: boolean;
+  /** Who an untagged human message wakes, for a new room: "last" (default) or "all". */
+  wake?: "last" | "all";
+  /** Seat-to-seat wakes per thread for a new room; null for no limit. */
+  cap?: number | null;
   /** Seat factory, for tests. */
   makeSeat?: (config: SeatConfig, decide: PermissionDecider, notice: (text: string) => void) => Seat;
 }
@@ -59,6 +65,10 @@ export interface RoomState {
   mode: RoomMode;
   /** Auto mode: tool calls no rule matches run without asking the human. */
   auto?: boolean;
+  /** Who an untagged human message wakes: whoever spoke last (default), or every idle seat. */
+  wake?: "last" | "all";
+  /** Seat-to-seat wakes per thread; null for no limit. Default MAX_HANDOFFS. */
+  cap?: number | null;
   /** Roles set with `/role`, over the roster's. `null`: no role. */
   roles?: Record<string, string | null>;
   /** The lineup, in roster order, as last opened. `room resume` reopens it. */
@@ -94,7 +104,24 @@ function fileList(files: string[], max = 5): string {
   return files.length <= max ? files.join(", ") : `${files.slice(0, max).join(", ")} and ${files.length - max} more`;
 }
 
-/** Hand-offs allowed per human message before the room stops seats volleying. */
+/** One conversation: the seats queued to answer, in order, and who is answering now. */
+interface Thread {
+  id: number;
+  queue: string[];
+  answering: Set<string>;
+  /** Seat-to-seat wakes so far, against the cap. */
+  wakes: number;
+  /** Seats tagged past the cap or paused as a volley; `/cap +n` lets them go on. */
+  held: string[];
+  hops: Array<{ from: string; to: string; length: number }>;
+  cancelled: boolean;
+  resolve: (r: RoundResult) => void;
+}
+
+/** A reply shorter than this, bouncing between two seats, counts toward a volley. */
+const VOLLEY_SHORT = 300;
+
+/** Seat-to-seat wakes allowed per thread before the room pauses it (`/cap` changes it). */
 export const MAX_HANDOFFS = 6;
 
 /** Tool kinds refused during a parallel round: every seat is writing at once. */
@@ -114,7 +141,6 @@ interface TurnResult {
 
 export class Room {
   readonly transcript: Transcript;
-  readonly scheduler: Scheduler;
   readonly seats = new Map<string, Seat>();
   readonly state: RoomState;
   private readonly statePath: string;
@@ -141,7 +167,11 @@ export class Room {
   private readonly lastFailure = new Map<string, { error: string; count: number }>();
   /** Seats whose turn is running now: one in sequential mode, several in a parallel batch. */
   private readonly active = new Set<string>();
-  private cancelRequested = false;
+  /** Conversations in flight: each human message starts one, and seats' tags extend it. */
+  private readonly threads: Thread[] = [];
+  private threadCount = 0;
+  /** Seats whose turn is being set up (git work before the prompt), so nothing else starts them. */
+  private readonly starting = new Set<string>();
 
   private constructor(readonly opts: RoomOptions) {
     for (const s of opts.seats) {
@@ -157,7 +187,6 @@ export class Room {
     if (!opts.stateDir && !existsSync(ignore)) writeFileSync(ignore, "*\n");
     this.statePath = join(this.stateDir, "state.json");
     this.transcript = Transcript.open(join(this.stateDir, "transcript.jsonl"));
-    this.scheduler = new Scheduler(opts.seats.map((s) => s.name));
     this.state = existsSync(this.statePath)
       ? (JSON.parse(readFileSync(this.statePath, "utf8")) as RoomState)
       : {
@@ -171,6 +200,8 @@ export class Room {
         };
     this.state.mode ??= "sequential";
     if (opts.auto) this.state.auto = true;
+    if (opts.wake) this.state.wake ??= opts.wake;
+    if (opts.cap !== undefined) this.state.cap ??= opts.cap;
     for (const s of opts.seats) {
       const p = (this.state.policy[s.name] ??= emptyPolicy());
       for (const r of s.allow ?? []) if (!p.allow.includes(r)) p.allow.push(r);
@@ -262,6 +293,11 @@ export class Room {
       role ? `${seat}'s role is now ${label}. ${seat}, from here on: ${prompt}` : `${seat} no longer has a role; it answers as itself.`,
     );
     this.opts.ui.status(role ? `${seat} is now the ${label}` : `${seat} has no role`);
+  }
+
+  setWake(wake: "last" | "all"): void {
+    this.state.wake = wake;
+    this.saveState();
   }
 
   setAuto(on: boolean): void {
@@ -386,41 +422,68 @@ export class Room {
     );
   }
 
-  /** The human speaks. A leading `@seat` routes the round to those seats only. */
+  /**
+   * The human speaks, and it posts at once, whatever else is going on. Who
+   * wakes: the seats it tags (anywhere in it, `@all` for every idle seat),
+   * else whoever spoke last. Tagged seats answer one at a time (together in
+   * parallel mode), each seeing the replies before it. A tag with `!`
+   * (`@grok!`) interrupts that seat if it is busy. Resolves when the thread
+   * this message starts has gone quiet.
+   */
   async say(text: string): Promise<RoundResult> {
-    if (this.busy) throw new Error("round in progress");
-    const { targets, text: body } = parseAddress(text, this.seatNames);
+    const { ui } = this.opts;
+    const { text: body } = parseAddress(text, this.seatNames);
+    const tags = humanTags(text, this.seatNames);
     this.transcript.append(this.opts.human, "message", body);
-    this.handoffs = 0;
-    // Addressing a benched seat is asking for it back.
-    for (const t of targets) if (this.benched.has(t)) this.unbench(t);
-    for (const t of targets.filter((x) => this.background.has(x))) {
-      this.opts.ui.status(`${t} is working in the background; it reads this when it finishes (/stop ${t} to cancel)`);
+    for (const t of tags.seats) if (this.benched.has(t)) this.unbench(t);
+    // `!`: interrupt a busy seat so it reads this now.
+    for (const t of tags.urgent) {
+      if (this.background.has(t)) {
+        ui.status(`${t} is interrupted: its background work stops here, and it reads this now`);
+        await this.stopBackground(t);
+      } else if (this.active.has(t)) {
+        ui.status(`${t} is interrupted to read this now`);
+        await this.seats.get(t)?.cancel().catch(() => undefined);
+      }
     }
-    const addressed = targets.filter((t) => !this.background.has(t));
-    if (targets.length && addressed.length === 0) return { cancelled: false };
-    const wanted = targets.length ? addressed : this.activeSeats();
+    let wanted: string[];
+    if (tags.all) wanted = this.activeSeats();
+    else if (tags.seats.length) wanted = tags.seats;
+    else if (this.state.wake === "all") wanted = this.activeSeats();
+    else wanted = this.lastSpeaker() ? [this.lastSpeaker()!] : this.activeSeats().slice(0, 1);
+    for (const t of wanted.filter((x) => this.background.has(x))) {
+      ui.status(`${t} is working in the background; it reads this when it finishes (@${t}! to interrupt)`);
+    }
+    wanted = wanted.filter((x) => !this.background.has(x) && !this.benched.has(x));
     if (wanted.length === 0) {
-      this.opts.ui.status(`every seat is benched; @name one, or /unbench, to bring it back`);
+      if (!tags.seats.length && !this.activeSeats().length) ui.status(`every seat is benched or busy; @name one to bring it back`);
       return { cancelled: false };
     }
-    this.scheduler.fill(wanted);
-    return this.runRound();
+    return this.startThread(wanted);
   }
 
   /**
-   * Another round with no new human message. Without explicit seats, a seat
-   * whose last turn was a pass and who has seen nothing new since is skipped.
+   * Wake seats with nothing new from the human. Without explicit seats,
+   * every seat in the rotation except one that passed and has seen nothing
+   * new since.
    */
   async continueRound(seats?: string[]): Promise<RoundResult> {
-    if (this.busy) throw new Error("round in progress");
     const wanted = seats && seats.length ? seats : this.activeSeats().filter((s) => !this.passedWithNothingNew(s));
     if (wanted.length === 0) {
       this.opts.ui.status("everyone passed and nothing is new; say something to continue");
       return { cancelled: false };
     }
-    this.scheduler.fill(wanted);
-    return this.runRound();
+    return this.startThread(wanted);
+  }
+
+  /** The seat that spoke most recently and can still be woken. */
+  private lastSpeaker(): string | undefined {
+    const entries = this.transcript.entries;
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const e = entries[i];
+      if ((e.kind === "message" || e.kind === "pass") && this.seatNames.includes(e.from) && this.activeSeats().includes(e.from)) return e.from;
+    }
+    return undefined;
   }
 
   /** Seats in the rotation: not benched, not working in the background. In roster order. */
@@ -435,21 +498,194 @@ export class Room {
     return true;
   }
 
+  /** Whether any thread is still going: seats queued or answering. */
   get roundRunning(): boolean {
-    return this.busy;
+    return this.threads.length > 0;
+  }
+
+  /** Seats queued to answer, in the order they will, across threads. */
+  get queued(): string[] {
+    return [...new Set(this.threads.flatMap((t) => t.queue))];
+  }
+
+  /** Seat-to-seat wakes allowed per thread before the room pauses it; null for no limit. */
+  get cap(): number | null {
+    return this.state.cap === undefined ? MAX_HANDOFFS : this.state.cap;
   }
 
   /**
-   * Stop the running round: drop the queue and cancel every seat mid-turn.
-   * Each cancelled turn is recorded as a pass, and no hand-off follows it.
+   * `/cap`: a number, `off`, or `+n`. Raising it lets paused threads go on:
+   * seats held back at the old limit are queued again.
+   */
+  setCap(value: number | null, release = false): void {
+    this.state.cap = value;
+    this.saveState();
+    if (!release) return;
+    for (const t of this.threads) {
+      for (const s of t.held.splice(0)) if (!t.queue.includes(s)) t.queue.push(s);
+    }
+    this.pump();
+  }
+
+  /**
+   * Stop every thread: drop the queues and cancel the seats answering. Each
+   * cancelled turn is recorded as a pass, and nothing it tagged wakes.
+   * Background work goes on (`/stop` ends that).
    */
   async cancel(): Promise<void> {
-    if (!this.busy) return;
-    this.cancelRequested = true;
-    this.scheduler.clear();
-    // The round's seats only: background work goes on (`/stop` ends that).
-    const round = [...this.active].filter((n) => !this.background.has(n));
-    await Promise.all(round.map((n) => this.seats.get(n)?.cancel().catch(() => undefined)));
+    if (!this.threads.length) return;
+    for (const t of this.threads) {
+      t.cancelled = true;
+      t.queue.length = 0;
+      t.held.length = 0;
+    }
+    const answering = [...this.active].filter((n) => !this.background.has(n));
+    await Promise.all(answering.map((n) => this.seats.get(n)?.cancel().catch(() => undefined)));
+    this.opts.ui.status("round cancelled");
+    this.pump();
+  }
+
+  // ---- threads: who answers, in what order ----
+
+  private startThread(queue: string[]): Promise<RoundResult> {
+    let resolve!: (r: RoundResult) => void;
+    const done = new Promise<RoundResult>((r) => (resolve = r));
+    const thread: Thread = {
+      id: ++this.threadCount,
+      queue: [...new Set(queue)],
+      answering: new Set(),
+      wakes: 0,
+      held: [],
+      hops: [],
+      cancelled: false,
+      resolve,
+    };
+    this.threads.push(thread);
+    this.pump();
+    return done;
+  }
+
+  /**
+   * Start whatever can start. A seat answers one turn at a time. In a
+   * thread, seats go in order (all at once in parallel mode). Without desks
+   * seats share one directory, so only one answers at a time in the whole
+   * room, unless a parallel round refuses their edits.
+   */
+  private pump(): void {
+    if (this.stopped) return;
+    const parallel = this.state.mode === "parallel";
+    for (const t of [...this.threads]) {
+      if (t.cancelled) t.queue.length = 0;
+      const shared = !this.useDesks && !parallel;
+      const batch: string[] = [];
+      while (t.queue.length && (parallel || t.answering.size === 0)) {
+        if (shared && this.answeringCount() > 0) break;
+        const i = t.queue.findIndex((s) => !this.active.has(s) && !this.starting.has(s) && !this.background.has(s));
+        if (i < 0) break;
+        const [seat] = t.queue.splice(i, 1);
+        batch.push(seat);
+        if (parallel) {
+          if (batch.length === 1) this.opts.ui.status(`parallel round: ${[seat, ...t.queue.filter((s) => !this.active.has(s) && !this.background.has(s))].join(", ")}`);
+          if (this.configOf(seat).adapter === "cli") this.opts.ui.status(`${seat} is a cli seat: its edits cannot be refused, only asked for in the prompt`);
+        }
+        this.beginTurn(t, seat, parallel);
+        if (!parallel) break;
+      }
+      if (!t.queue.length && t.answering.size === 0) {
+        this.threads.splice(this.threads.indexOf(t), 1);
+        t.resolve({ cancelled: t.cancelled });
+      }
+    }
+  }
+
+  private answeringCount(): number {
+    return [...this.active, ...this.starting].filter((n) => !this.background.has(n)).length;
+  }
+
+  private beginTurn(t: Thread, seat: string, parallel: boolean): void {
+    t.answering.add(seat);
+    this.starting.add(seat);
+    // Another seat is already answering: this one's output goes to the side, so neither splits the other.
+    const alongside = this.answeringCount() > 1;
+    void (async () => {
+      try {
+        // Anything the human changed is theirs, not the seat's. Under the trunk lock: another seat may be merging.
+        if (this.useGit) await this.withTrunk(() => this.commitHumanChanges(`changes before ${seat}'s turn`));
+        if (t.cancelled) return;
+        const { ui } = this.opts;
+        const emit = (ev: SeatEvent) => (alongside && ui.sideEvent ? ui.sideEvent(seat, ev) : ui.seatEvent(seat, ev));
+        const entry = await this.runTurn(seat, { emit, parallel, cancelled: () => t.cancelled });
+        if (entry?.kind === "message" && !t.cancelled && !this.stopped) {
+          this.maybeBackground(seat, entry.text);
+          this.route(t, seat, entry.text);
+        }
+      } catch (err) {
+        this.opts.ui.status(`${seat}: ${(err as Error).message}`);
+      } finally {
+        this.starting.delete(seat);
+        t.answering.delete(seat);
+        this.pump();
+      }
+    })();
+  }
+
+  /**
+   * A seat's reply tags others: they join the end of its thread's queue. A
+   * tag is `@name` (or `@all`) on the reply's first or last line; one in the
+   * middle is a citation ("as @grok said"), so a seat cannot steer the room
+   * from inside its prose. A seat mid-turn is not woken again: the message
+   * waits in its unread part. Seat-to-seat wakes stop at the cap, and two
+   * seats volleying short replies are paused.
+   */
+  private route(t: Thread, from: string, text: string): void {
+    const { ui } = this.opts;
+    const lines = text.split("\n").filter((l) => l.trim());
+    const edges = lines.length <= 2 ? lines.join("\n") : `${lines[0]}\n${lines[lines.length - 1]}`;
+    const all = /(?:^|[\s(,;:>"'*_])@all\b/i.test(edges.replace(/```[\s\S]*?```/g, " ").replace(/`[^`\n]*`/g, " "));
+    let mentions = scanMentions(edges, [...this.seatNames, this.opts.human]).filter((m) => m !== from);
+    const human = this.opts.human.toLowerCase();
+    if (mentions.some((m) => m.toLowerCase() === human)) ui.status(`${from} asked for ${this.opts.human}`);
+    mentions = mentions.filter((m) => m.toLowerCase() !== human);
+    if (all) mentions = [...new Set([...mentions, ...this.activeSeats().filter((s) => s !== from)])];
+    for (const m of mentions) {
+      if (this.benched.has(m)) {
+        ui.status(`${from} → ${m}, but ${m} is benched; @${m} to bring it back`);
+        continue;
+      }
+      if (this.background.has(m)) {
+        ui.status(`${from} → ${m}, but ${m} is working in the background; it reads this when it finishes`);
+        continue;
+      }
+      if (this.active.has(m) || this.starting.has(m)) {
+        ui.status(`${from} → ${m}, who is mid-turn; it reads this next time`);
+        continue;
+      }
+      if (t.queue.includes(m) || t.held.includes(m)) continue;
+      const cap = this.cap;
+      if (cap !== null && t.wakes >= cap) {
+        t.held.push(m);
+        ui.status(`${from} → ${m}, held: ${cap} seat-to-seat wakes this thread (/cap +10 to let them go on)`);
+        continue;
+      }
+      if (this.volleying(t, from, m, text)) {
+        t.held.push(m);
+        ui.status(`${from} and ${m} have been going back and forth; paused. @ either to continue`);
+        continue;
+      }
+      t.wakes += 1;
+      t.hops.push({ from, to: m, length: text.length });
+      t.queue.push(m);
+      ui.status(`${from} → ${m}`);
+    }
+  }
+
+  /** Two seats waking each other with short replies, again and again: an echo, not a discussion. */
+  private volleying(t: Thread, from: string, to: string, text: string): boolean {
+    const recent = [...t.hops.slice(-3), { from, to, length: text.length }];
+    if (recent.length < 4) return false;
+    const pair = new Set([from, to]);
+    return recent.every((h, i) => pair.has(h.from) && pair.has(h.to) && h.from !== h.to && (i === 0 || h.from === recent[i - 1].to)) &&
+      recent.every((h) => h.length < VOLLEY_SHORT);
   }
 
   /**
@@ -473,7 +709,7 @@ export class Room {
       ui.status(`${name} is mid-turn; send it to the background after`);
       return false;
     }
-    this.scheduler.remove(name);
+    for (const t of this.threads) t.queue.splice(0, t.queue.length, ...t.queue.filter((s) => s !== name));
     if (from === "human") this.transcript.append(this.opts.human, "message", `@${name} (in the background) ${task}`);
     else this.transcript.append("room", "system", `${name} went on working in the background: ${task}`);
     ui.status(`${name} is working in the background: ${task} (/stop ${name} to cancel)`);
@@ -560,113 +796,6 @@ export class Room {
       }
     }
     return false;
-  }
-
-  private async runRound(): Promise<RoundResult> {
-    if (this.busy) throw new Error("round in progress");
-    this.busy = true;
-    this.cancelRequested = false;
-    try {
-      while (!this.stopped && !this.cancelRequested && this.scheduler.pending.length) {
-        if (this.state.mode === "parallel") {
-          await this.runParallelBatch();
-        } else {
-          const seat = this.scheduler.shift()!;
-          // Anything the human changed between turns is theirs, not the next seat's.
-          // Under the trunk lock: a background seat may be merging into this same tree.
-          if (this.useGit) await this.withTrunk(() => this.commitHumanChanges(`changes before ${seat}'s turn`));
-          if (this.cancelRequested) break;
-          const entry = await this.runTurn(seat);
-          if (entry?.kind === "message" && !this.cancelRequested) {
-            this.maybeBackground(seat, entry.text);
-            this.handOff(seat, entry.text);
-          }
-        }
-      }
-      if (this.cancelRequested) {
-        this.scheduler.clear();
-        this.opts.ui.status("round cancelled");
-      }
-      return { cancelled: this.cancelRequested };
-    } finally {
-      this.busy = false;
-      this.cancelRequested = false;
-    }
-  }
-
-  /**
-   * A reply addressing another seat puts that seat next. An address is a
-   * mention on the reply's first or last line; one in the middle is a
-   * citation ("as @grok said") and is ignored, so a seat cannot steer the
-   * room from inside its prose. Asking for the human is announced, never
-   * lets one seat cut the others off.
-   */
-  private handOff(from: string, text: string): void {
-    const { ui } = this.opts;
-    const lines = text.split("\n").filter((l) => l.trim());
-    const edges = lines.length <= 2 ? lines.join("\n") : `${lines[0]}\n${lines[lines.length - 1]}`;
-    const mentions = scanMentions(edges, [...this.seatNames, this.opts.human]).filter((m) => m !== from);
-    const human = this.opts.human.toLowerCase();
-    if (mentions.some((m) => m.toLowerCase() === human)) ui.status(`${from} asked for ${this.opts.human}`);
-    for (const m of mentions.filter((x) => x.toLowerCase() !== human).reverse()) {
-      if (this.benched.has(m)) {
-        ui.status(`${from} → ${m}, but ${m} is benched; @${m} to bring it back`);
-        continue;
-      }
-      if (this.background.has(m)) {
-        ui.status(`${from} → ${m}, but ${m} is working in the background; it reads this when it finishes`);
-        continue;
-      }
-      // Moving an already-queued seat forward is free; adding a turn counts.
-      const extraTurn = !this.scheduler.pending.includes(m);
-      if (extraTurn && this.handoffs >= MAX_HANDOFFS) {
-        ui.status(`hand-off limit (${MAX_HANDOFFS}) reached; say something to continue`);
-        return;
-      }
-      if (extraTurn) this.handoffs += 1;
-      this.scheduler.pushFront(m);
-      ui.status(`${from} → ${m}`);
-    }
-  }
-
-  /** Every queued seat answers the same snapshot at once. Edits are refused by the decider. */
-  private async runParallelBatch(): Promise<void> {
-    const { ui } = this.opts;
-    const names: string[] = [];
-    let s: string | undefined;
-    while ((s = this.scheduler.shift())) names.push(s);
-    ui.status(`parallel round: ${names.join(", ")}`);
-    for (const n of names) {
-      if (this.opts.seats.find((s) => s.name === n)?.adapter === "cli") {
-        ui.status(`${n} is a cli seat: its edits cannot be refused, only asked for in the prompt`);
-      }
-    }
-    if (this.useDesks) for (const n of names) await this.syncDesk(n);
-    // Everyone answers this snapshot; afterwards each has seen up to here, plus its own reply.
-    const snapshotLast = this.transcript.last;
-    const prompts = names.map((n) => this.buildPrompt(n, true));
-    const buffers = new Map<string, SeatEvent[]>(names.map((n) => [n, []]));
-    const results = await Promise.all(
-      names.map((n, i) => this.collectTurn(n, prompts[i], (ev) => buffers.get(n)!.push(ev))),
-    );
-    // Replay in roster order so the UI never interleaves two seats.
-    const replies: Array<{ seat: string; entry: Entry }> = [];
-    for (const [i, n] of names.entries()) {
-      for (const ev of buffers.get(n)!) ui.seatEvent(n, ev);
-      const entry = this.recordTurn(n, results[i]);
-      replies.push({ seat: n, entry });
-      // Landed in roster order: a later seat that touched the same lines conflicts and is told.
-      if (this.useDesks) await this.closeTurn(n, entry, results[i].text);
-    }
-    // Next round each seat gets the whole batch; its own entry is skipped when rendering.
-    for (const r of replies) this.state.cursors[r.seat] = snapshotLast;
-    this.saveState();
-    if (this.cancelRequested) return;
-    for (const r of replies) {
-      if (r.entry.kind !== "message") continue;
-      this.maybeBackground(r.seat, r.entry.text);
-      this.handOff(r.seat, r.entry.text);
-    }
   }
 
   private buildPrompt(name: string, parallel: boolean): string {
@@ -773,19 +902,22 @@ export class Room {
     const why = now ? "its harness says to wait or log in" : "it failed twice with the same error";
     this.opts.ui.status(`${name} is benched: ${why}. @${name} or /unbench ${name} brings it back`);
     this.transcript.append("room", "system", `${name} sits out until ${this.opts.human} brings it back.`);
-    this.scheduler.remove(name);
+    for (const t of this.threads) t.queue.splice(0, t.queue.length, ...t.queue.filter((s) => s !== name));
   }
 
-  async runTurn(name: string): Promise<Entry | undefined> {
+  async runTurn(
+    name: string,
+    how: { emit?: (ev: SeatEvent) => void; parallel?: boolean; cancelled?: () => boolean } = {},
+  ): Promise<Entry | undefined> {
     const { ui } = this.opts;
     if (!this.seats.has(name)) throw new Error(`no such seat: ${name}`);
     if (this.useDesks) await this.syncDesk(name);
     // A cancel that came during the git work above: the seat never starts.
-    if (this.cancelRequested) return undefined;
-    const prompt = this.buildPrompt(name, false);
+    if (how.cancelled?.()) return undefined;
+    const prompt = this.buildPrompt(name, Boolean(how.parallel));
     const snapshot = this.transcript.last;
     const headBefore = this.useGit ? await headSha(this.opts.cwd).catch(() => undefined) : undefined;
-    const result = await this.collectTurn(name, prompt, (ev) => ui.seatEvent(name, ev));
+    const result = await this.collectTurn(name, prompt, how.emit ?? ((ev) => ui.seatEvent(name, ev)));
     const entry = this.recordTurn(name, result);
     this.state.cursors[name] = this.seenThrough(name, snapshot);
 

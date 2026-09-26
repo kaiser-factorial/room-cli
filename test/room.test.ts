@@ -201,6 +201,7 @@ describe("Room", () => {
     dir = mkdtempSync(join(tmpdir(), "room-r-"));
     const fakes = new Map<string, FakeSeat>();
     const room = await Room.open({
+    wake: "all",
       name: "t",
       cwd: dir,
       seats,

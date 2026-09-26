@@ -165,6 +165,10 @@ export class ReplUI implements RoomUI {
   private readonly thoughtRuns = new Map<string, { text: string; printed: boolean }>();
   /** Background seats' unfinished lines (`seat`, and `seat#thought`), printed whole. */
   private readonly bgPartial = new Map<string, string>();
+  /** What a seat's gutter says: "(bg)" for background work, nothing for a seat answering alongside. */
+  private readonly gutterLabel = new Map<string, string>();
+  /** A seat's reply so far on its current line, while the human's prompt is on screen. */
+  private readonly fgPartial = new Map<string, string>();
   /** Permission questions one at a time, whichever seat asks. */
   private asking: Promise<unknown> = Promise.resolve();
 
@@ -213,7 +217,14 @@ export class ReplUI implements RoomUI {
    * the seat's colour, whole lines only, so it never splits a reply from the
    * seat whose turn it is.
    */
-  backgroundEvent(seat: string, ev: SeatEvent): void {
+  /** A seat answering alongside another: whole lines behind its gutter, like background work. */
+  sideEvent(seat: string, ev: SeatEvent): void {
+    this.gutterLabel.set(seat, "");
+    this.backgroundEvent(seat, ev, false);
+  }
+
+  backgroundEvent(seat: string, ev: SeatEvent, bg = true): void {
+    if (bg) this.gutterLabel.set(seat, "(bg)");
     const { dim } = this.style;
     const brief = (line: string) => this.bgLine(seat, dim(`thinking: ${line}`));
     if (ev.type !== "thought") this.endThought(seat, brief);
@@ -299,7 +310,8 @@ export class ReplUI implements RoomUI {
 
   private bgLine(seat: string, line: string): void {
     this.newline();
-    this.out.write(`${this.colourOf(seat)(`▌ ${seat}`)} ${this.style.dim("(bg)")} ${line}\n`);
+    const label = this.gutterLabel.get(seat) ?? "(bg)";
+    this.out.write(`${this.colourOf(seat)(`▌ ${seat}`)}${label ? ` ${this.style.dim(label)}` : ""} ${line}\n`);
     this.lineStart = true;
     this.speaker = undefined;
   }
@@ -331,6 +343,13 @@ export class ReplUI implements RoomUI {
     switch (ev.type) {
       case "text": {
         const text = sanitizeForTerminal(ev.text);
+        // The human's prompt is up: write whole lines, so the prompt redraws below each one.
+        if (this.lines.prompting) {
+          const parts = ((this.fgPartial.get(seat) ?? "") + text).split("\n");
+          this.fgPartial.set(seat, parts.pop()!);
+          for (const line of parts) this.replyLine(seat, line);
+          break;
+        }
         if (this.speaker !== seat) {
           this.gap();
           this.out.write(`${this.seatName(seat)}> `);
@@ -362,9 +381,11 @@ export class ReplUI implements RoomUI {
       }
       case "tool_call":
       case "tool_update":
+        if (toolLines.length) this.flushReply(seat);
         for (const l of toolLines) this.toolish(dim(this.toolLine(seat, l)));
         break;
       case "stop":
+        this.flushReply(seat);
         for (const l of this.tools.unfinished(seat)) this.toolish(dim(this.toolLine(seat, l)));
         this.newline();
         this.speaker = undefined;
@@ -373,6 +394,21 @@ export class ReplUI implements RoomUI {
       default:
         break;
     }
+  }
+
+  /** One whole line of a seat's reply; the first of a reply carries its name. */
+  private replyLine(seat: string, line: string): void {
+    const head = this.speaker !== seat;
+    if (head) this.gap();
+    this.out.write(`${head ? `${this.seatName(seat)}> ` : ""}${line}\n`);
+    this.speaker = seat;
+    this.lineStart = true;
+  }
+
+  private flushReply(seat: string): void {
+    const rest = this.fgPartial.get(seat);
+    this.fgPartial.delete(seat);
+    if (rest?.trim()) this.replyLine(seat, rest);
   }
 
   /** `· title` heads a call as `  · seat: title`; its other lines indent under it. */
@@ -463,15 +499,17 @@ export async function runRepl(room: Room, lines: LineSource, ui: ReplUI): Promis
       ui.show(arg);
       continue;
     }
+    // Seats answer while the prompt stays open: nothing here waits for them.
+    const report = (err: unknown) => ui.status(`error: ${(err as Error).message}`);
     if (text === "" || text === "/next") {
-      await room.continueRound();
+      void room.continueRound().catch(report);
       continue;
     }
     if (text.startsWith("/")) {
       await runCommand(room, text, (l) => out.write(l + "\n"));
       continue;
     }
-    await room.say(text);
+    void room.say(text).catch(report);
   }
   ui.status("closing seats");
   await room.stop();

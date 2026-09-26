@@ -257,6 +257,7 @@ describe("Room against fake harnesses", () => {
     git("commit", "-q", "-m", "seed");
     const u = ui(["allow"]);
     const room = await Room.open({
+      wake: "all",
       name: "fake",
       cwd,
       seats: [fakeAcpSeat("a", ["--modes"]), fakeAcpSeat("b")],
@@ -265,8 +266,8 @@ describe("Room against fake harnesses", () => {
     });
     await room.start();
     expect(room.state.modes.a).toBe("default");
-    await room.say(">> mention b what do you think");
-    // a addresses b; b answers; then the round continues with b already done.
+    await room.say("@a >> mention b what do you think");
+    // a tags b, which wakes b after it.
     expect(room.transcript.entries.filter((e) => e.kind === "message").map((e) => e.from)).toEqual(["Corina", "a", "b"]);
     expect(u.lines).toContain("a → b");
 
@@ -283,7 +284,7 @@ describe("Room against fake harnesses", () => {
     const state = tmp("state");
     const u = ui();
     const seats = [fakeAcpSeat("a", ["--resume"], state), fakeAcpSeat("b", ["--load"], state), fakeCliSeat("c", state)];
-    let room = await Room.open({ name: "res", cwd, seats, human: "Corina", ui: u, git: false, mode: "parallel" });
+    let room = await Room.open({ name: "res", cwd, seats, human: "Corina", ui: u, git: false, mode: "parallel", wake: "all" });
     await room.start();
     await room.say(">> edit x.txt nope");
     expect(u.asked).toEqual([]);
@@ -299,7 +300,7 @@ describe("Room against fake harnesses", () => {
     const sessions = { ...room.state.sessions };
     await room.stop();
 
-    room = await Room.open({ name: "res", cwd, seats, human: "Corina", ui: ui(), git: false });
+    room = await Room.open({ name: "res", cwd, seats, human: "Corina", ui: ui(), git: false, wake: "all" });
     await room.start();
     expect(room.state.sessions).toEqual(sessions);
     expect(room.opts.ui === u).toBe(false);

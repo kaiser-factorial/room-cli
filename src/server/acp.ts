@@ -33,6 +33,8 @@ export interface AcpServerOptions {
   desks?: boolean;
   /** New rooms start in auto mode. */
   auto?: boolean;
+  wake?: "last" | "all";
+  cap?: number | null;
   /** Room mode for new sessions. */
   mode?: RoomMode;
   turnTimeoutMs?: number;
@@ -61,6 +63,8 @@ const COMMANDS: acp.AvailableCommand[] = [
   { name: "parallel", description: "Every seat answers at once; file changes are refused" },
   { name: "sequential", description: "Seats answer one at a time" },
   { name: "role", description: "Give a seat a role from the presets; alone, list them", input: { hint: "<seat> [id|none]" } },
+  { name: "cap", description: "Seat-to-seat wakes per thread; +n lets a paused thread go on", input: { hint: "[n|+n|off]" } },
+  { name: "wake", description: "Who an untagged message wakes: whoever spoke last, or every idle seat", input: { hint: "last|all" } },
   { name: "auto", description: "Tool calls run without asking, except deny and ask rules", input: { hint: "[on|off]" } },
   { name: "mode", description: "Show or set a seat's session mode", input: { hint: "<seat> [mode]" } },
   { name: "perm", description: "Show a seat's room policy, or add a rule", input: { hint: "<seat> [allow|ask|deny <pattern>]" } },
@@ -116,6 +120,8 @@ export function serveAcp(stream: acp.Stream, opts: AcpServerOptions): AcpServer 
         git: opts.git,
         desks: opts.desks,
         auto: isNew ? opts.auto : undefined,
+        wake: isNew ? opts.wake : undefined,
+        cap: isNew ? opts.cap : undefined,
         mode: isNew ? opts.mode : undefined,
         turnTimeoutMs: opts.turnTimeoutMs,
         makeSeat: opts.makeSeat,

@@ -60,6 +60,7 @@ const two: SeatConfig[] = [
 async function openRoom(seatsScripts: Record<string, ScriptSeat>, seats = two, git = false) {
   dir = mkdtempSync(join(tmpdir(), "room-adv-"));
   const room = await Room.open({
+    wake: "all",
     name: "adv",
     cwd: dir,
     seats,
@@ -143,17 +144,23 @@ describe("start and round failures", () => {
     expect(a.stopped).toBe(true);
   });
 
-  it("refuses an overlapping round instead of interleaving turns", async () => {
+  it("a message during a slow turn posts at once; without desks the next seat waits its turn", async () => {
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
     const a = new ScriptSeat(two[0], [async () => { await gate; return "slow"; }]);
     const b = new ScriptSeat(two[1], ["fast"]);
     const room = await openRoom({ a, b });
-    const first = room.say("one");
-    await expect(room.say("two")).rejects.toThrow(/round in progress/);
+    const first = room.say("@a one");
+    const second = room.say("@b two");
+    await new Promise((r) => setTimeout(r, 20));
+    // The human's message is in the transcript while a is still working...
+    const said = () => room.transcript.entries.filter((e) => e.kind === "message").map((e) => `${e.from}:${e.text}`);
+    expect(said()).toEqual(["Corina:one", "Corina:two"]);
+    // ...but in one shared directory only one seat works at a time.
+    expect(room.queued).toContain("b");
     release();
-    await first;
-    expect(room.transcript.entries.filter((e) => e.kind === "message").map((e) => e.from)).toEqual(["Corina", "a", "b"]);
+    await Promise.all([first, second]);
+    expect(said()).toEqual(["Corina:one", "Corina:two", "a:slow", "b:fast"]);
   });
 });
 

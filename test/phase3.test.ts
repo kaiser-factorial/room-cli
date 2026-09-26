@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { MAX_HANDOFFS, Room, type RoomUI } from "../src/room.js";
+import { Room, type RoomUI } from "../src/room.js";
 import { scanMentions } from "../src/scheduler.js";
 import type { PermissionDecider, PermissionRequestView, Seat, SeatConfig, SeatEvent } from "../src/seat/types.js";
 
@@ -81,6 +81,7 @@ async function openRoom(scripts: Record<string, Reply[]>, ui = makeUI(), mode: "
   const seats = Object.keys(scripts).map(cfg);
   const fakes = new Map<string, ScriptSeat>();
   const room = await Room.open({
+    wake: "all",
     name: "p3",
     cwd: dir,
     seats,
@@ -111,10 +112,28 @@ describe("scanMentions", () => {
 });
 
 describe("hand-offs", () => {
-  it("a seat addressing another puts it next, ahead of the rest of the round", async () => {
-    const { room } = await openRoom({ a: ["@c what do you think?"], b: ["b here"], c: ["c answering a"] });
-    await room.say("go");
-    expect(speakers(room)).toEqual(["Corina:message", "a:message", "c:message", "b:message"]);
+  it("a seat's tag joins the end of the queue: what the human asked for is answered first", async () => {
+    const { room, ui } = await openRoom({ a: ["@c what do you think?"], b: ["b here"], c: ["c answering a"] });
+    await room.say("@a @b go");
+    expect(speakers(room)).toEqual(["Corina:message", "a:message", "b:message", "c:message"]);
+    expect(ui.lines).toContain("a → c");
+  });
+
+  it("a tag for a seat already queued does not queue it twice", async () => {
+    const { room, fakes } = await openRoom({ a: ["@b over to you"], b: ["b once"] });
+    await room.say("@a @b go");
+    expect(fakes.get("b")!.prompts.length).toBe(1);
+  });
+
+  it("an untagged message wakes whoever spoke last; @all wakes everyone", async () => {
+    const { room, fakes } = await openRoom({ a: ["a first", "a again"], b: ["b first", "b again"] });
+    room.setWake("last");
+    await room.say("@b hi");
+    await room.say("and a follow-up");
+    expect(speakers(room).slice(-2)).toEqual(["Corina:message", "b:message"]);
+    expect(fakes.get("a")!.prompts.length).toBe(0);
+    await room.say("@all everyone?");
+    expect(fakes.get("a")!.prompts.length).toBe(1);
   });
 
   it("asking for the human is announced but does not cut the other seats off", async () => {
@@ -137,30 +156,41 @@ describe("hand-offs", () => {
   it("a mention on the last line is a hand-off", async () => {
     const { room } = await openRoom({ a: ["Some analysis.\nMore analysis.\n@c your turn."], b: ["b"], c: ["c answers"] });
     await room.say("@a @b go");
-    expect(speakers(room)).toEqual(["Corina:message", "a:message", "c:message", "b:message"]);
+    expect(speakers(room)).toEqual(["Corina:message", "a:message", "b:message", "c:message"]);
   });
 
-  it("two seats volleying stop at the hand-off limit", async () => {
+  it("two seats echoing short replies at each other are paused", async () => {
     const forever = Array.from({ length: 20 }, () => "@b your turn");
     const back = Array.from({ length: 20 }, () => "@a no, yours");
     const { room, ui } = await openRoom({ a: forever, b: back });
-    await room.say("go");
+    await room.say("@a go");
     const turns = room.transcript.entries.filter((e) => e.kind === "message" && e.from !== "Corina").length;
-    // Both seats take their round turn, then at most MAX_HANDOFFS extra turns.
-    expect(turns).toBe(2 + MAX_HANDOFFS);
-    expect(ui.lines.some((l) => l.startsWith("hand-off limit"))).toBe(true);
+    expect(turns).toBe(4);
+    expect(ui.lines).toContain("b and a have been going back and forth; paused. @ either to continue");
   });
 
-  it("the limit resets when the human speaks again", async () => {
-    const forever = Array.from({ length: 40 }, () => "@b your turn");
-    const back = Array.from({ length: 40 }, () => "@a no, yours");
-    const { room, ui } = await openRoom({ a: forever, b: back });
-    await room.say("first");
-    await room.say("second");
-    // Each human message got its own full allowance before the limit hit.
-    expect(ui.lines.filter((l) => l.startsWith("hand-off limit")).length).toBe(2);
-    const turns = room.transcript.entries.filter((e) => e.kind === "message" && e.from !== "Corina").length;
-    expect(turns).toBe(2 * (2 + MAX_HANDOFFS));
+  it("a long exchange stops at the cap, and /cap +n lets it go on", async () => {
+    const long = (who: string) => Array.from({ length: 20 }, (_, i) => `${"real analysis ".repeat(30)}${i}\n@${who} your turn`);
+    const { room, ui } = await openRoom({ a: long("b"), b: long("a") });
+    room.setCap(3);
+    await room.say("@a go");
+    const count = () => room.transcript.entries.filter((e) => e.kind === "message" && e.from !== "Corina").length;
+    expect(count()).toBe(4);
+    expect(ui.lines.some((l) => /held: 3 seat-to-seat wakes this thread \(\/cap \+10/.test(l))).toBe(true);
+    const more = room.say("@b carry on");
+    room.setCap(null, true);
+    await more;
+    await new Promise((r) => setTimeout(r, 50));
+    expect(count()).toBeGreaterThan(5);
+  });
+
+  it("each human message starts a thread with its own allowance", async () => {
+    const long = (who: string) => Array.from({ length: 40 }, (_, i) => `${"real analysis ".repeat(30)}${i}\n@${who} your turn`);
+    const { room, ui } = await openRoom({ a: long("b"), b: long("a") });
+    room.setCap(2);
+    await room.say("@a first");
+    await room.say("@a second");
+    expect(ui.lines.filter((l) => /held: 2 seat-to-seat wakes/.test(l)).length).toBe(2);
   });
 });
 
@@ -190,9 +220,8 @@ describe("parallel mode", () => {
     await room.continueRound();
     expect(fakes.get("a")!.prompts[1]).toContain("[b]: b first");
     expect(fakes.get("b")!.prompts[1]).toContain("[a]: a first");
-    // UI events are replayed per seat, never interleaved.
-    const order = ui.events.map(([s]) => s).join("");
-    expect(order).toMatch(/^a+b+a+b+$/);
+    // Both streamed at once; each seat's events stay its own.
+    expect(new Set(ui.events.map(([s]) => s))).toEqual(new Set(["a", "b"]));
   });
 
   it("refuses edits without asking the human, and allows them again in sequential mode", async () => {
@@ -211,8 +240,9 @@ describe("parallel mode", () => {
   it("hand-offs from a parallel batch run afterwards", async () => {
     const { room, fakes } = await openRoom({ a: ["@c please", "a done"], b: ["b", "b done"], c: ["c replying"] }, makeUI(), "parallel");
     await room.say("@a @b go");
-    expect(speakers(room)).toEqual(["Corina:message", "a:message", "b:message", "c:message"]);
-    // c was handed the batch's replies, a's included.
+    expect(speakers(room).sort()).toEqual(["Corina:message", "a:message", "b:message", "c:message"].sort());
+    expect(speakers(room).indexOf("c:message")).toBeGreaterThan(speakers(room).indexOf("a:message"));
+    // c was handed a's reply.
     expect(fakes.get("c")!.prompts[0]).toContain("[a]: @c please");
   });
 });

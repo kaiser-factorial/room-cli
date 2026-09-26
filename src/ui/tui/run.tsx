@@ -18,6 +18,9 @@ export class TuiUI implements RoomUI {
   seatEvent(seat: string, ev: SeatEvent): void {
     this.store.seatEvent(seat, ev);
   }
+  sideEvent(seat: string, ev: SeatEvent): void {
+    this.store.seatEvent(seat, ev);
+  }
   backgroundEvent(seat: string, ev: SeatEvent): void {
     this.store.seatEvent(seat, ev, true);
   }
@@ -39,7 +42,7 @@ export async function runTui(room: Room, store: TuiStore, ready: Promise<void>):
     const text = raw.trim();
     const [cmd, arg] = text.split(/\s+/);
     if (text === "" || cmd === "/next") {
-      await room.continueRound();
+      void room.continueRound().catch((err) => store.status(`error: ${(err as Error).message}`));
     } else if (cmd === "/quit" || cmd === "/q") {
       app.unmount();
     } else if (cmd === "/help") {
@@ -58,7 +61,8 @@ export async function runTui(room: Room, store: TuiStore, ready: Promise<void>):
       await runCommand(room, text, (l) => lines.push(l));
       store.info(lines);
     } else {
-      await room.say(text);
+      // Seats answer while the input stays open: a message never waits for the last one's replies.
+      void room.say(text).catch((err) => store.status(`error: ${(err as Error).message}`));
     }
   };
 
@@ -94,7 +98,14 @@ export async function runTui(room: Room, store: TuiStore, ready: Promise<void>):
             background: room.background.has(s.name),
           }))
         }
-        flags={() => [room.mode === "parallel" ? "parallel" : "", room.auto ? "auto" : "", store.tools.detail === "full" ? "verbose" : ""].filter(Boolean)}
+        flags={() =>
+          [
+            room.queued.length ? `next: ${room.queued.join(" → ")}` : "",
+            room.mode === "parallel" ? "parallel" : "",
+            room.auto ? "auto" : "",
+            store.tools.detail === "full" ? "verbose" : "",
+          ].filter(Boolean)
+        }
         onSubmit={onSubmit}
       />
     </>,
