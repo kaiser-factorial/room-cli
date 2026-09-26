@@ -21,9 +21,9 @@ Design", https://claude.ai/code/artifact/8624261e-8ed2-45ea-ad01-d8b06166e1e1
 | 6 desks: a worktree per seat, landing on the trunk | done, with `[land]`/`/land`, background turns, `/auto` |
 | threads step 1: event loop replaces rounds | done: wake rules, `@all`, `@seat!`, queue-at-end tags, `/cap`, `/wake`, echo pause |
 | threads step 2: room MCP server (`inbox`, `post`, `status`, `show`, `diff`) | done; HTTP for Claude, stdio bridge otherwise; not yet tried with a live harness |
-| threads step 3: urgent interrupts polish, posting rate limits | later |
+| threads step 3: urgent interrupts polish, posting rate limits | done |
 
-Tests: `pnpm install && pnpm test` in `packages/room`, 120 tests, run
+Tests: `pnpm install && pnpm test` in `packages/room`, 123 tests, run
 anywhere with Node 22+. The room is no longer in the root's npm workspace:
 it has its own `pnpm-lock.yaml` (pnpm 11, build scripts allowed in
 `pnpm-workspace.yaml`), its own `vitest.config.ts`, and a `room` job in CI
@@ -65,6 +65,17 @@ the turn starts from there. `post` appends as the seat and routes its tags
 on the seat's thread. The fake agent's `>> tool <name> <json>` exercises
 both transports. Also fixed: `room acp` now holds a side-by-side seat's
 text until its turn ends, so parallel replies no longer interleave.
+
+## Interrupts and post limits (step 3)
+
+`@seat!` on a seat mid-turn sets `Room.interrupted`, then cancels it.
+`recordTurn` keeps the cut reply as `… (interrupted by <human>)` (or a
+room note when it had written nothing), `beginTurn` does not route its
+tags, and `cutNotes` tells the seat on its next prompt. The human's
+thread goes to the front of `threads`, so the seat answers it first.
+`parseAddress` now strips `@seat!` and `@all` from the posted text. `post`
+is limited per turn (`postLimit`, default 3), spaced (`postGapMs`, default
+5000), and refuses a repeat; `Room.posts` resets when a turn starts.
 
 ## Emulating the harnesses in the cloud
 

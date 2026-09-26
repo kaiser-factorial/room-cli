@@ -219,6 +219,57 @@ describe("room MCP tools", () => {
   });
 });
 
+describe("post limits", () => {
+  it("refuses a repeat, a post too soon, and posts past the limit", async () => {
+    const results: string[] = [];
+    const ui = makeUI();
+    const fakes = new Map<string, ToolSeat>();
+    const script: Reply[] = [
+      async (_p, call) => {
+        results.push(await call("post", { text: "one" }));
+        results.push(await call("post", { text: "one" }));
+        results.push(await call("post", { text: "two" }));
+        results.push(await call("post", { text: "three" }));
+        return "done";
+      },
+    ];
+    const room = await Room.open({
+      name: "lim",
+      cwd: tmp(),
+      seats: [{ name: "a", adapter: "acp", command: "x" }],
+      human: "Corina",
+      ui,
+      git: false,
+      postLimit: 2,
+      postGapMs: 0,
+      makeSeat: (c) => {
+        const f = new ToolSeat(c, script);
+        fakes.set(c.name, f);
+        return f;
+      },
+    });
+    await room.start();
+    await room.say("@a go");
+    expect(results).toEqual([
+      "Posted.",
+      "error: Not posted: you just posted that.",
+      "Posted.",
+      "error: Not posted: 2 posts a turn is the limit. Put the rest in your final reply.",
+    ]);
+    await room.stop();
+  });
+
+  it("spaces posts out by default", async () => {
+    const results: string[] = [];
+    const { room } = await openRoom({
+      a: [async (_p, call) => (results.push(await call("post", { text: "x" }), await call("post", { text: "y" })), "ok")],
+    });
+    await room.say("@a go");
+    expect(results[1]).toMatch(/^error: Not posted: one post every 5s/);
+    await room.stop();
+  });
+});
+
 describe("room MCP tools through a real harness", () => {
   it("reach the fake agent over HTTP, and through the stdio bridge when it has no HTTP", async () => {
     const cwd = tmp();

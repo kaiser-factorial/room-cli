@@ -189,6 +189,9 @@ request the room never made, a non-JSON line) are shown once each, named.
     seeing the replies before it;
   - `@all`: every idle seat;
   - `@grok!`: interrupts grok now, even mid-turn or in the background.
+    What it had written stays in the transcript, marked `(interrupted by
+    you)`, and its tags wake nobody. It answers your message before any
+    other thread goes on, told that you cut it short.
   A seat that is mid-turn is not woken again; your message is waiting in
   what it reads next.
 - **Hand-offs:** a seat that writes `@name` on the first or last line of
@@ -224,6 +227,10 @@ it works instead of only when its turn ends:
 | `status` | Who is answering, queued, in the background, or benched; mode, wake, cap. |
 | `show` | A transcript entry in full with its tool calls (`id`), or the last few (`last`, `from`). |
 | `diff` | A seat's work not landed yet: its desk branch against the trunk, plus uncommitted work. Without desks, the shared directory's uncommitted changes. |
+
+`post` is rate limited so a seat cannot flood the room: 3 posts a turn,
+one every 5 seconds, no repeats (`postLimit`, `postGapMs` in
+`Room.open`). A refused post tells the seat why.
 
 The server listens on 127.0.0.1 with a secret URL per seat, which is how
 it knows who is calling. Harnesses that take HTTP MCP servers (Claude)

@@ -57,6 +57,10 @@ export interface RoomOptions {
   wake?: "last" | "all";
   /** Seat-to-seat wakes per thread for a new room; null for no limit. */
   cap?: number | null;
+  /** Posts a seat may make with the `post` tool in one turn. Default 3. */
+  postLimit?: number;
+  /** Least time between two posts from one seat, in ms. Default 5000. */
+  postGapMs?: number;
   /** Serve the room's MCP tools (inbox, post, status, show, diff) to seats that take them. Default: true. */
   tools?: boolean;
   /** Seat factory, for tests. */
@@ -183,6 +187,12 @@ export class Room {
   private readonly withTools = new Set<string>();
   /** How far a seat mid-turn has read, its prompt plus what `inbox` showed it. */
   private readonly reading = new Map<string, number>();
+  /** A seat's posts this turn: how many, when the last was, and what it said. */
+  private readonly posts = new Map<string, { count: number; at: number; text: string }>();
+  /** Seats whose turn the human cut short with `@seat!`, and who did. */
+  private readonly interrupted = new Map<string, string>();
+  /** Told to an interrupted seat at the top of its next turn. */
+  private readonly cutNotes = new Map<string, string>();
 
   private constructor(readonly opts: RoomOptions) {
     for (const s of opts.seats) {
@@ -463,6 +473,7 @@ export class Room {
         await this.stopBackground(t);
       } else if (this.active.has(t)) {
         ui.status(`${t} is interrupted to read this now`);
+        this.interrupted.set(t, this.opts.human);
         await this.seats.get(t)?.cancel().catch(() => undefined);
       }
     }
@@ -479,7 +490,8 @@ export class Room {
       if (!tags.seats.length && !this.activeSeats().length) ui.status(`every seat is benched or busy; @name one to bring it back`);
       return { cancelled: false };
     }
-    return this.startThread(wanted);
+    // An interrupt jumps the line: the seats it names answer before other threads go on.
+    return this.startThread(wanted, tags.urgent.some((u) => wanted.includes(u)));
   }
 
   /**
@@ -567,8 +579,9 @@ export class Room {
 
   // ---- threads: who answers, in what order ----
 
-  private startThread(queue: string[]): Promise<RoundResult> {
-    const { done } = this.newThread(queue);
+  private startThread(queue: string[], first = false): Promise<RoundResult> {
+    const { thread, done } = this.newThread(queue);
+    if (first) this.threads.unshift(...this.threads.splice(this.threads.indexOf(thread), 1));
     this.pump();
     return done;
   }
@@ -640,7 +653,8 @@ export class Room {
         const { ui } = this.opts;
         const emit = (ev: SeatEvent) => (alongside && ui.sideEvent ? ui.sideEvent(seat, ev) : ui.seatEvent(seat, ev));
         const entry = await this.runTurn(seat, { emit, parallel, cancelled: () => t.cancelled });
-        if (entry?.kind === "message" && !t.cancelled && !this.stopped) {
+        const cut = this.interrupted.delete(seat) && entry?.text.endsWith(`(interrupted by ${this.opts.human})`);
+        if (entry?.kind === "message" && !cut && !t.cancelled && !this.stopped) {
           this.maybeBackground(seat, entry.text);
           this.route(t, seat, entry.text);
         }
@@ -766,6 +780,7 @@ export class Room {
     await this.syncDesk(name);
     const snapshot = this.transcript.last;
     this.reading.set(name, snapshot);
+    this.posts.delete(name);
     const prompt =
       this.buildPrompt(name, false) +
       `\n\n[room]: You are working in the background on: ${task}\n` +
@@ -848,9 +863,12 @@ export class Room {
         : "[room]: Parallel discussion round: every seat answers at once and file changes are refused this round.\n\n";
     const desk = this.deskNotes.get(name);
     this.deskNotes.delete(name);
+    const cut = this.cutNotes.get(name);
+    this.cutNotes.delete(name);
     return (
       preamble +
       note +
+      (cut ? `${cut}\n\n` : "") +
       (rendered || `[room]: Your turn. Reply ${PASS} if you have nothing to add.`) +
       (desk ? `\n\n${desk}` : "")
     );
@@ -914,6 +932,14 @@ export class Room {
       return this.transcript.append("room", "system", `${name}'s turn failed: ${failure}${partial}`, steps);
     }
     this.lastFailure.delete(name);
+    const by = this.interrupted.get(name);
+    if (by && r.stopReason === "cancelled") {
+      // Cut short by the human: what it had written stays, marked, and its tags wake nobody.
+      this.cutNotes.set(name, `[room]: ${by} interrupted your last turn to say something. Read it first; pick your work back up only if it still stands.`);
+      return reply
+        ? this.transcript.append(name, "message", `${reply}\n\n(interrupted by ${by})`, steps)
+        : this.transcript.append("room", "system", `${name} was interrupted by ${by}.`, steps);
+    }
     return !reply || reply === PASS || r.stopReason === "cancelled"
       ? this.transcript.append(name, "pass", "", steps)
       : this.transcript.append(name, "message", reply, steps);
@@ -945,6 +971,7 @@ export class Room {
     const prompt = this.buildPrompt(name, Boolean(how.parallel));
     const snapshot = this.transcript.last;
     this.reading.set(name, snapshot);
+    this.posts.delete(name);
     const headBefore = this.useGit ? await headSha(this.opts.cwd).catch(() => undefined) : undefined;
     const result = await this.collectTurn(name, prompt, how.emit ?? ((ev) => ui.seatEvent(name, ev)));
     const entry = this.recordTurn(name, result);
@@ -1112,6 +1139,16 @@ export class Room {
   private post(seat: string, text: string): string {
     if (!this.active.has(seat)) throw new Error("post works during your turn only; reply normally instead");
     if (text === PASS) return "Not posted: passing is for your final reply.";
+    const limit = this.opts.postLimit ?? 3;
+    const gap = this.opts.postGapMs ?? 5000;
+    const mine = this.posts.get(seat) ?? { count: 0, at: 0, text: "" };
+    if (mine.count >= limit) {
+      throw new Error(`Not posted: ${limit} posts a turn is the limit. Put the rest in your final reply.`);
+    }
+    if (text === mine.text) throw new Error("Not posted: you just posted that.");
+    const wait = mine.at + gap - Date.now();
+    if (wait > 0) throw new Error(`Not posted: one post every ${Math.round(gap / 1000)}s; try again in ${Math.ceil(wait / 1000)}s, or keep working.`);
+    this.posts.set(seat, { count: mine.count + 1, at: Date.now(), text });
     this.transcript.append(seat, "message", text);
     const { ui } = this.opts;
     if (ui.posted) ui.posted(seat, text);

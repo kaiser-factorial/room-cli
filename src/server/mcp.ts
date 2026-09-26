@@ -41,7 +41,7 @@ export const TOOLS = [
   {
     name: "post",
     description:
-      "Post a message to the room now, mid-turn: a progress note, a question, or a heads-up. Tag a seat with @name on its first or last line to wake it. Your final reply is still posted when your turn ends; do not repeat it here.",
+      "Post a message to the room now, mid-turn: a progress note, a question, or a heads-up. Tag a seat with @name on its first or last line to wake it. Your final reply is still posted when your turn ends; do not repeat it here. A few posts a turn at most, spaced out; repeats are refused.",
     inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
   },
   {

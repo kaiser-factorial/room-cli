@@ -186,6 +186,31 @@ describe("background turns", () => {
   });
 });
 
+describe("interrupts", () => {
+  it("@seat! cuts a turn short: the seat is told, answers first, and its cut reply wakes nobody", async () => {
+    const { room, fakes, lines } = await openRoom(
+      { a: [async (_p, cancelled) => (await cancelled, ""), "a answering the interrupt"], b: ["b after"], c: ["c never"] },
+      false,
+    );
+    const first = room.say("@a @b go");
+    await new Promise((r) => setTimeout(r, 20));
+    await room.say("@a! stop, wrong file");
+    await first;
+    expect(lines).toContain("a is interrupted to read this now");
+    const said = room.transcript.entries.filter((e) => e.kind !== "commit").map((e) => `${e.from}: ${e.text}`);
+    expect(said.slice(-5)).toEqual([
+      "Corina: go",
+      "Corina: stop, wrong file",
+      "room: a was interrupted by Corina.",
+      "a: a answering the interrupt",
+      "b: b after",
+    ]);
+    expect(fakes.get("a")!.prompts[1]).toContain("[room]: Corina interrupted your last turn");
+    expect(fakes.get("c")!.prompts.length).toBe(0);
+    await room.stop();
+  });
+});
+
 describe("LineSource", () => {
   it("puts a question on top of the prompt already waiting, and answers each in turn", async () => {
     const input = new PassThrough();

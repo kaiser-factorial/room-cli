@@ -65,9 +65,9 @@ export function parseAddress(text: string, seats: string[]): { targets: string[]
   const targets: string[] = [];
   let rest = text.trimStart();
   for (;;) {
-    const m = /^@([\w-]+)[,:]?\s*/.exec(rest);
+    const m = /^@([\w-]+)!?[,:]?\s*/.exec(rest);
     if (!m) break;
-    const seat = seats.find((s) => s.toLowerCase() === m[1].toLowerCase());
+    const seat = m[1].toLowerCase() === "all" ? "all" : seats.find((s) => s.toLowerCase() === m[1].toLowerCase());
     if (!seat) break;
     if (!targets.includes(seat)) targets.push(seat);
     rest = rest.slice(m[0].length);
