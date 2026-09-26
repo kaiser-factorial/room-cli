@@ -64,11 +64,14 @@ describe("desks", () => {
     const { room } = await open(cwd, tmp("state"));
     const deskA = room.seatCwd("a");
     expect(deskA).toBe(join(cwd, ".room", "d", "desks", "a"));
-    expect(git("rev-parse", "--abbrev-ref", "HEAD")).toBe("room/d");
+    // Your checkout stays on your branch; the trunk has its own worktree.
+    expect(git("rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
+    expect(room.trunkDir).toBe(join(cwd, ".room", "d", "trunk"));
     await room.say("@a >> edit calc.py return a + b\n>> land");
     // Written in a's desk, then landed on the trunk in the human's tree, as a.
-    expect(readFileSync(join(cwd, "calc.py"), "utf8")).toBe("return a + b\n");
-    expect(git("log", "-1", "--format=%an")).toBe("a");
+    expect(readFileSync(join(room.trunkDir, "calc.py"), "utf8")).toBe("return a + b\n");
+    expect(git("log", "-1", "--format=%an", "room/d")).toBe("a");
+    expect(readFileSync(join(cwd, "calc.py"), "utf8")).toBe("return a - b\n");
     // b's desk is not touched: it is told, and merges when it is ready.
     await room.say("@b >> say looking");
     const showB = (ref: string) => execFileSync("git", ["show", `${ref}:calc.py`], { cwd: room.seatCwd("b"), encoding: "utf8" });
@@ -85,8 +88,8 @@ describe("desks", () => {
     const { cwd, git } = repo();
     const { room } = await open(cwd, tmp("state"));
     await room.say("@a >> edit notes.md first draft\n>> commit notes: first draft, for b to review\n>> land");
-    expect(git("log", "-1", "--format=%an|%s")).toBe("a|notes: first draft, for b to review");
-    expect(git("log", "--format=%s")).not.toMatch(/a: turn/);
+    expect(git("log", "-1", "--format=%an|%s", "room/d")).toBe("a|notes: first draft, for b to review");
+    expect(git("log", "--format=%s", "room/d")).not.toMatch(/a: turn/);
     await room.stop();
   }, 60_000);
 
@@ -102,7 +105,7 @@ describe("desks", () => {
     expect(existsSync(join(cwd, "wip.txt"))).toBe(false);
     // /land commits what is left, as a, and merges it.
     await room.land("a");
-    expect(readFileSync(join(cwd, "wip.txt"), "utf8")).toBe("three quarters\n");
+    expect(readFileSync(join(room.trunkDir, "wip.txt"), "utf8")).toBe("three quarters\n");
     expect(git("log", "-2", "--format=%an|%s", "desk/d/a").split("\n")[0]).toMatch(/^a\|a: uncommitted work/);
     expect(await room.unlanded("a")).toBe(0);
     await room.stop();
@@ -129,13 +132,46 @@ describe("desks", () => {
     await room.say(">> edit calc.py return {agent}\n>> land");
     // Both edited without being refused; a landed first, b's clashes.
     expect(u.lines.filter((l) => /deny by room/.test(l))).toEqual([]);
-    expect(readFileSync(join(cwd, "calc.py"), "utf8")).toBe("return a\n");
+    expect(readFileSync(join(room.trunkDir, "calc.py"), "utf8")).toBe("return a\n");
     expect(u.lines).toContain("b's work conflicts with room/d in calc.py; it stays on desk/d/b until b merges room/d into it");
     expect(readFileSync(join(room.seatCwd("b"), "calc.py"), "utf8")).toBe("return b\n");
     // On b's next turn the room tells it what the trunk has; merging and resolving is b's.
     room.setRoomMode("sequential");
     await room.say("@b >> say on it");
     expect(lastPrompt(state, room.state.sessions.b)).toContain("`git merge room/d` when you are ready");
+    await room.stop();
+  }, 60_000);
+
+  it("brings your branch into the trunk as you commit, and /sync brings landed work back", async () => {
+    const { cwd, git } = repo();
+    const { room, u } = await open(cwd, tmp("state"));
+    // You commit on your own branch while the room is open; the next turn starts from a trunk that has it.
+    writeFileSync(join(cwd, "notes.md"), "mine\n");
+    git("add", "notes.md");
+    git("commit", "-q", "-m", "human: notes");
+    await room.say("@a >> edit calc.py return a + b\n>> land");
+    expect(u.lines.some((l) => /^Corina's main came into room\/d: 1 commit/.test(l))).toBe(true);
+    expect(readFileSync(join(room.trunkDir, "notes.md"), "utf8")).toBe("mine\n");
+    expect(u.lines).toContain("room/d is 2 commits ahead of your main; /sync brings them into it");
+    // Uncommitted work of yours is named, and never taken.
+    writeFileSync(join(cwd, "scratch.txt"), "draft");
+    await room.say("@a >> say ok");
+    expect(u.lines.some((l) => /your checkout has uncommitted changes \(scratch\.txt\)/.test(l))).toBe(true);
+    expect(await room.syncOut()).toBe("main now has the room's work: 2 commits from room/d");
+    expect(readFileSync(join(cwd, "calc.py"), "utf8")).toBe("return a + b\n");
+    expect(git("rev-parse", "--abbrev-ref", "HEAD")).toBe("main");
+    await room.stop();
+  }, 60_000);
+
+  it("leaves a conflict between your branch and the trunk to you", async () => {
+    const { cwd, git } = repo();
+    const { room, u } = await open(cwd, tmp("state"));
+    await room.say("@a >> edit calc.py return a + b\n>> land");
+    writeFileSync(join(cwd, "calc.py"), "return a * b\n");
+    git("commit", "-qam", "human: multiply");
+    await room.say("@b >> say ok");
+    expect(u.lines.some((l) => /^Corina's main conflicts with room\/d in calc\.py, so the room did not bring it in\. To resolve: cd .*trunk && git merge main$/.test(l))).toBe(true);
+    expect(readFileSync(join(room.trunkDir, "calc.py"), "utf8")).toBe("return a + b\n");
     await room.stop();
   }, 60_000);
 

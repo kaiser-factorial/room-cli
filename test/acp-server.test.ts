@@ -152,8 +152,10 @@ describe("room acp", () => {
     expect(req.toolCall.toolCallId).toBe("b:0:t1");
     expect(req.toolCall.content?.[0]).toMatchObject({ type: "diff", newText: "return a + b\n" });
     expect(req.options.map((o) => o.kind)).toEqual(["allow_once", "allow_always", "reject_once"]);
-    expect(readFileSync(join(cwd, "calc.py"), "utf8")).toBe("return a + b\n");
-    expect(git("log", "-1", "--format=%an")).toBe("b");
+    // Landed on the room's trunk; your checkout stays as it was.
+    const trunk = git("for-each-ref", "--format=%(refname:short)", "refs/heads/room/");
+    expect(git("show", `${trunk}:calc.py`)).toBe("return a + b");
+    expect(git("log", "-1", "--format=%an", trunk)).toBe("b");
     expect(r.text).toMatch(/\*\*b>\*\* edited calc.py \n\n\[land\] \n\n\[room\] b landed 1 commit on room\/acp-\S+ \([0-9a-f]+\): 1 file changed/);
     // The tool call itself, namespaced by seat and turn.
     const calls = ed.updates.slice(r.from).filter((u) => u.update.sessionUpdate === "tool_call");
@@ -166,7 +168,7 @@ describe("room acp", () => {
     expect(ed.asked[1].toolCall.toolCallId).toBe("b:1:t1");
     await ed.prompt(sessionId, "@b >> edit calc.py return a / b\n>> land");
     expect(ed.asked.length).toBe(2);
-    expect(readFileSync(join(cwd, "calc.py"), "utf8")).toBe("return a / b\n");
+    expect(git("show", `${trunk}:calc.py`)).toBe("return a / b");
     await ed.close();
   }, 60_000);
 

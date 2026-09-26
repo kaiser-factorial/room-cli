@@ -254,6 +254,72 @@ describe("waking", () => {
   });
 });
 
+describe("resuming", () => {
+  class Resumable extends ToolSeat {
+    async resumeSession() {
+      return true;
+    }
+    get sessionId() {
+      return "s1";
+    }
+  }
+  async function openWith(cwd: string, seats: SeatConfig[], fakes: Map<string, ToolSeat>) {
+    const room = await Room.open({
+      name: "r",
+      cwd,
+      seats,
+      human: "Corina",
+      ui: { seatEvent() {}, askHuman: async () => "deny", status() {} },
+      git: false,
+      tools: false,
+      makeSeat: (c) => {
+        const f = new Resumable(c);
+        fakes.set(c.name, f);
+        return f as never;
+      },
+    });
+    await room.start();
+    return room;
+  }
+
+  it("a resumed seat is given the room's instructions again when they have changed, once", async () => {
+    const cwd = tmp("cwd");
+    let fakes = new Map<string, ToolSeat>();
+    let room = await openWith(cwd, [{ name: "a", adapter: "acp", command: "x" }], fakes);
+    await room.say("hello");
+    expect(fakes.get("a")!.prompts[0]).toContain("You are a, one seat in a room");
+    await room.stop();
+    // Reopened with a role: the instructions differ, so the resumed session is told.
+    fakes = new Map();
+    room = await openWith(cwd, [{ name: "a", adapter: "acp", command: "x", role: "critic" }], fakes);
+    await room.say("again");
+    expect(fakes.get("a")!.prompts[0]).toMatch(/^\[room\]: The room's instructions have changed since your session began/);
+    await room.say("and again");
+    expect(fakes.get("a")!.prompts[1]).not.toContain("instructions have changed");
+    await room.stop();
+  });
+
+  it("an old room whose trunk is checked out in your directory says how to move on", async () => {
+    const cwd = tmp("repo");
+    const git = (...a: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd });
+    git("init", "-q", "-b", "main");
+    writeFileSync(join(cwd, "f.txt"), "seed\n");
+    git("add", "f.txt");
+    git("commit", "-q", "-m", "seed");
+    git("checkout", "-q", "-b", "room/r");
+    const room = await Room.open({
+      name: "r",
+      cwd,
+      seats: [{ name: "a", adapter: "acp", command: "x" }],
+      human: "Corina",
+      ui: { seatEvent() {}, askHuman: async () => "deny", status() {} },
+      tools: false,
+      makeSeat: (c) => new ToolSeat(c) as never,
+    });
+    await expect(room.start()).rejects.toThrow(/your checkout is on room\/r, the room's trunk .* Check out your own branch/);
+  });
+});
+
 describe("past rooms", () => {
   async function aRoom(cwd: string, name: string, git = false) {
     const ui: RoomUI = { seatEvent() {}, askHuman: async () => "deny", status() {} };

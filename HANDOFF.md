@@ -25,7 +25,7 @@ Design", https://claude.ai/code/artifact/8624261e-8ed2-45ea-ad01-d8b06166e1e1
 | moderator: an OpenRouter model (or the human) decides when a limit trips | done; not tried against OpenRouter live |
 | menu (`room`): defaults, moderator key, skills & MCP sharing, past rooms, archive | done; checked in a pty |
 
-Tests: `pnpm install && pnpm test` in `packages/room`, 148 tests, run
+Tests: `pnpm install && pnpm test` in `packages/room`, 152 tests, run
 anywhere with Node 22+. The room is no longer in the root's npm workspace:
 it has its own `pnpm-lock.yaml` (pnpm 11, build scripts allowed in
 `pnpm-workspace.yaml`), its own `vitest.config.ts`, and a `room` job in CI
@@ -119,6 +119,22 @@ at a scratch dir so tests never touch the real config.
   commits only when landing.
 - Allow-by-policy lines are gone (the tool call is on screen); deny lines
   are one line, 100 characters at most.
+
+## The trunk has its own worktree (2026-09-26)
+
+Resuming a room used to check out `room/<name>` in the human's directory,
+putting their editor on stale source, and never saw their later commits.
+Now (desks mode only; no-desk git mode is unchanged): `openTrunk` records
+`state.base` (branch and sha) and makes `.room/<name>/trunk` a worktree;
+refuses to open when the checkout is on the trunk branch (old rooms), with
+the command to fix it. `syncBase` (at open, and before every turn) brings
+the base in by fast-forward or clean merge; conflicts and rewritten bases
+are reported, never forced. `mergeDesk` lands into the trunk worktree;
+`noteAhead` and `/sync` (`syncOut`, fast-forward only) bring work out.
+`checkDirty` names uncommitted files once per change. `buildPrompt` hashes
+the preamble per seat (`state.preambles`) and re-sends it to a resumed
+session when it changed. `scripts/stamp.mjs` writes `dist/build.json`;
+`checkBuild` warns when the trunk lacks the build's commit.
 
 ## Emulating the harnesses in the cloud
 

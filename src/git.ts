@@ -195,3 +195,38 @@ function isDirSync(p: string): boolean {
 export async function logRange(cwd: string, range: string, max: number): Promise<string> {
   return git(cwd, ["log", `-${max}`, "--format=- %an: %s", range]);
 }
+
+/** The full sha a ref names, or undefined when there is no such ref. */
+export async function revParse(cwd: string, ref: string): Promise<string | undefined> {
+  return git(cwd, ["rev-parse", "--verify", "-q", `${ref}^{commit}`]).catch(() => undefined);
+}
+
+/** Whether `a` is an ancestor of (or the same as) `b`. */
+export async function isAncestor(cwd: string, a: string, b: string): Promise<boolean> {
+  return git(cwd, ["merge-base", "--is-ancestor", a, b]).then(
+    () => true,
+    () => false,
+  );
+}
+
+/** Uncommitted paths in a checkout, the room's own state excepted. */
+export async function dirtyFiles(cwd: string): Promise<string[]> {
+  const out = await git(cwd, ["status", "--porcelain", "--untracked-files=normal"]).catch(() => "");
+  return out
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => l.slice(3).replace(/^"|"$/g, ""))
+    .filter((f) => !f.split("/").includes(".room"));
+}
+
+/** Fast-forward the branch checked out at `cwd` to `ref`; false when it cannot (diverged, or files in the way). */
+export async function fastForward(cwd: string, ref: string): Promise<boolean> {
+  return git(cwd, ["merge", "-q", "--ff-only", ref]).then(
+    () => true,
+    () => false,
+  );
+}
+
+export async function topLevel(cwd: string): Promise<string | undefined> {
+  return git(cwd, ["rev-parse", "--show-toplevel"]).catch(() => undefined);
+}

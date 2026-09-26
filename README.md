@@ -179,9 +179,26 @@ keeps out of git.
 
 ### Desks
 
-In a git repo the room checks out `room/<name>`, the **trunk**, in your
-working directory, and gives every seat a **desk**: a git worktree at
-`.room/<name>/desks/<seat>` on its own branch, `desk/<name>/<seat>`.
+In a git repo the room never switches your checkout. It keeps a **trunk**,
+`room/<name>`, in its own worktree at `.room/<name>/trunk`, cut from the
+branch you were on (your **base**), and gives every seat a **desk**: a git
+worktree at `.room/<name>/desks/<seat>` on its own branch,
+`desk/<name>/<seat>`.
+
+- **Your branch flows in.** Whenever you commit on your base, the room
+  brings it into the trunk before the next turn (a fast-forward or a clean
+  merge), and seats are told. A conflict, or a base you rebased, is left to
+  you with the command to run; nothing is forced.
+- **Landed work flows out when you say.** After a landing the room says how
+  far the trunk is ahead of your branch; `/sync` fast-forwards your branch
+  to it. If you have both moved, it tells you to `git merge room/<name>`.
+- **Uncommitted work of yours is never taken.** The room names the files
+  and reminds you seats only see what you commit.
+- **Resuming** a room brings your branch in the same way, so a room left
+  for a week picks up what you did since. A resumed seat whose instructions
+  have changed (a new version of the room, a new role) gets the new ones.
+- **The room's own code.** `pnpm build` stamps the commit it was built
+  from; a room opened on this repo says when its trunk lacks that commit.
 
 - A seat owns git in its desk: it edits, runs, and commits there, with its
   own messages. Its commits carry its name (the room sets `GIT_AUTHOR_NAME`
@@ -193,8 +210,7 @@ working directory, and gives every seat a **desk**: a git worktree at
   `/land`) commits what is left, as the seat, before merging.
 - Nothing reaches the trunk until the seat says so: a reply ending `[land]`
   merges its branch into the trunk. `/land <seat>` does it for a seat;
-  `/seats` shows how many commits each desk has not landed. Your own edits
-  in the trunk are committed as you before a merge.
+  `/seats` shows how many commits each desk has not landed.
 - A merge that conflicts is aborted, the work stays on the desk, and the
   seat is told on its next turn to merge the trunk and resolve it.
 - **Background work.** `/bg grok build the parser`, or a seat ending its

@@ -68,6 +68,7 @@ const COMMANDS: acp.AvailableCommand[] = [
   { name: "sequential", description: "Seats answer one at a time" },
   { name: "role", description: "Give a seat a role from the presets; alone, list them", input: { hint: "<seat> [id|none]" } },
   { name: "cap", description: "Seat-to-seat wakes per thread; +n lets a paused thread go on", input: { hint: "[n|+n|off]" } },
+  { name: "sync", description: "Bring the room's landed work into your branch (fast-forward)" },
   { name: "mod", description: "Who decides when a limit trips: an OpenRouter model, you (here: held), or off", input: { hint: "off|you|auto|<model>" } },
   { name: "wake", description: "Who an untagged message wakes: whoever spoke last, or every idle seat", input: { hint: "last|all" } },
   { name: "auto", description: "Tool calls run without asking, except deny and ask rules", input: { hint: "[on|off]" } },

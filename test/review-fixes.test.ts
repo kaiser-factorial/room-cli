@@ -177,9 +177,11 @@ describe("code review fixes", () => {
   it("5: a cancel during the git work before a turn stops that turn from starting", async () => {
     const { room, fakes, cwd } = await openRoom(
       { a: ["should not run"] },
-      { onStatus: (l, r) => /Corina committed/.test(l) && void r.cancel() },
+      { onStatus: (l, r) => /came into room\//.test(l) && void r.cancel() },
     );
+    // The human commits on their branch; before the turn the room brings it into the trunk, and the cancel lands then.
     writeFileSync(join(cwd, "f.txt"), "the human's edit\n");
+    execFileSync("git", ["-c", "user.name=h", "-c", "user.email=h@h", "commit", "-qam", "human edit"], { cwd });
     const r = await room.say("go");
     expect(r.cancelled).toBe(true);
     expect(fakes.get("a")!.prompts).toEqual([]);

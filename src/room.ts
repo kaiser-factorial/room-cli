@@ -2,10 +2,30 @@
  * The Room: seats, transcript, scheduler, policy, and git, wired together.
  * The UI is injected so the REPL, tests, and a later TUI share this code.
  */
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { ConfigError, validateSeatName } from "./config.js";
-import { commitsAhead, commitTurn, diffText, linkIgnored, logRange, ensureRoomBranch, ensureWorktree, headSha, headSubject, isRepo, mergeRef } from "./git.js";
+import {
+  commitsAhead,
+  commitTurn,
+  currentBranch,
+  diffText,
+  dirtyFiles,
+  ensureRoomBranch,
+  ensureWorktree,
+  fastForward,
+  headSha,
+  headSubject,
+  isAncestor,
+  isRepo,
+  linkIgnored,
+  logRange,
+  mergeRef,
+  revParse,
+  topLevel,
+} from "./git.js";
+import { buildStamp } from "./build-info.js";
 import { emptyPolicy, makeDecider, type Action, type HumanChoice, type Policy, type SeatPolicy } from "./permissions.js";
 import { BACKGROUND, buildPreamble, LAND, PASS, roleList, rolePrompt } from "./preamble.js";
 import { humanTags, parseAddress, scanMentions } from "./scheduler.js";
@@ -99,6 +119,14 @@ export interface RoomState {
   sessions: Record<string, string>;
   /** Each seat's desk, when the room has them. */
   desks?: Record<string, { path: string; branch: string }>;
+  /**
+   * With desks: the branch your checkout was on when the room opened (and its
+   * sha then), brought into the trunk as it moves; \`seen\` is its tip the room
+   * last looked at. The trunk has its own worktree; your checkout stays yours.
+   */
+  base?: { branch?: string; sha: string; seen?: string };
+  /** A hash of the instructions each seat was last given, so a resumed seat is told when they change. */
+  preambles?: Record<string, string>;
   modes: Record<string, string>;
   policy: Policy;
 }
@@ -218,6 +246,8 @@ export class Room {
   private mod?: Moderator;
   /** Ignored paths (node_modules, .env) linked from the main checkout into every desk. */
   private linked: string[] = [];
+  /** The uncommitted files last reported, so the note is not repeated. */
+  private lastDirty = "";
 
   private constructor(readonly opts: RoomOptions) {
     for (const s of opts.seats) {
@@ -358,20 +388,29 @@ export class Room {
     /** Seats whose saved session was opened outside a desk: they start fresh in one. */
     const movedIn = new Set<string>();
     if (this.useGit) {
-      this.state.branch = await ensureRoomBranch(this.opts.cwd, this.opts.name);
-      await this.commitHumanChanges("changes before the room opened");
+      if (this.useDesks) await this.openTrunk();
+      else {
+        this.state.branch = await ensureRoomBranch(this.opts.cwd, this.opts.name);
+        await this.commitHumanChanges("changes before the room opened");
+      }
       if (this.useDesks) {
         const desks = (this.state.desks ??= {});
         for (const s of this.opts.seats) {
           if (!desks[s.name] && this.state.sessions[s.name]) movedIn.add(s.name);
           const desk = { path: join(this.stateDir, "desks", s.name), branch: `desk/${this.opts.name}/${s.name}` };
-          await ensureWorktree(this.opts.cwd, desk.path, desk.branch, this.state.branch);
+          await ensureWorktree(this.opts.cwd, desk.path, desk.branch, this.state.branch!);
           desks[s.name] = desk;
           const linked = await linkIgnored(this.opts.cwd, desk.path, this.opts.deskLinks).catch(() => []);
           if (linked.length) this.linked = linked;
         }
-        ui.status(`git: trunk ${this.state.branch}; each seat works and commits in its own desk, and lands its work with [land]`);
+        ui.status(
+          `git: trunk ${this.state.branch} in .room/${this.opts.name}/trunk, following your ${this.state.base?.branch ?? "checkout"}; ` +
+            `each seat works in its own desk and lands with [land]; /sync brings landed work into your branch`,
+        );
         if (this.linked.length) ui.status(`desks share the main checkout's ${this.linked.join(", ")} (linked, never committed)`);
+        await this.syncBase();
+        await this.checkDirty();
+        await this.checkBuild();
       } else {
         ui.status(`git: on branch ${this.state.branch}, committing after every edit turn`);
       }
@@ -496,6 +535,7 @@ export class Room {
     const { text: body } = parseAddress(text, this.seatNames);
     const tags = humanTags(text, this.seatNames);
     this.transcript.append(this.opts.human, "message", body);
+    if (this.useDesks) void this.checkDirty();
     for (const t of tags.seats) if (this.benched.has(t)) this.unbench(t);
     // `!`: interrupt a busy seat so it reads this now.
     for (const t of tags.urgent) {
@@ -687,7 +727,8 @@ export class Room {
     void (async () => {
       try {
         // Anything the human changed is theirs, not the seat's. Under the trunk lock: another seat may be merging.
-        if (this.useGit) await this.withTrunk(() => this.commitHumanChanges(`changes before ${seat}'s turn`));
+        if (this.useDesks) await this.syncBase();
+        else if (this.useGit) await this.withTrunk(() => this.commitHumanChanges(`changes before ${seat}'s turn`));
         if (t.cancelled) return;
         const { ui } = this.opts;
         const emit = (ev: SeatEvent) => (alongside && ui.sideEvent ? ui.sideEvent(seat, ev) : ui.seatEvent(seat, ev));
@@ -954,19 +995,26 @@ export class Room {
     const first = this.state.cursors[name] === undefined;
     const delta = this.transcript.since(this.state.cursors[name] ?? 0);
     const rendered = renderDelta(delta, name, [this.opts.human, "room"]);
+    const instructions = buildPreamble({
+      seat: config,
+      seats: this.opts.seats,
+      human: this.opts.human,
+      promptsForwarded: config.adapter === "acp" && !(config.deny?.includes("*") || config.allow?.includes("*")),
+      branch: this.state.branch,
+      desk: this.state.desks?.[name],
+      linked: this.linked,
+      tools: this.withTools.has(name),
+      skills: this.withTools.has(name) ? (this.opts.skills?.length ?? 0) : 0,
+    });
+    // A resumed seat keeps the instructions its session began with; when the room's have changed since, it gets the new ones.
+    const hash = createHash("sha1").update(instructions).digest("hex").slice(0, 12);
+    const had = this.state.preambles?.[name];
+    (this.state.preambles ??= {})[name] = hash;
     const preamble = first
-      ? buildPreamble({
-          seat: config,
-          seats: this.opts.seats,
-          human: this.opts.human,
-          promptsForwarded: config.adapter === "acp" && !(config.deny?.includes("*") || config.allow?.includes("*")),
-          branch: this.state.branch,
-          desk: this.state.desks?.[name],
-          linked: this.linked,
-          tools: this.withTools.has(name),
-          skills: this.withTools.has(name) ? (this.opts.skills?.length ?? 0) : 0,
-        }) + "\n\n---\n\n"
-      : "";
+      ? instructions + "\n\n---\n\n"
+      : had !== hash
+        ? `[room]: The room's instructions have changed since your session began. They are now:\n\n${instructions}\n\n---\n\n`
+        : "";
     const note = !parallel
       ? ""
       : this.useDesks
@@ -1174,12 +1222,12 @@ export class Room {
     const { ui } = this.opts;
     try {
       await this.withTrunk(async () => {
-        await this.commitHumanChanges(`changes before ${name}'s work landed`);
-        const r = await mergeRef(this.opts.cwd, desk.branch, name);
+        const r = await mergeRef(this.trunkDir, desk.branch, name);
         if (r.status === "merged") {
           const line = `${name} landed ${r.commits} commit${r.commits === 1 ? "" : "s"} on ${trunk} (${r.sha}): ${r.stat} (${fileList(r.files)})`;
           ui.status(line);
           this.transcript.append("room", "commit", line);
+          await this.noteAhead();
         } else if (r.status === "conflict") {
           const line = `${name}'s work conflicts with ${trunk} in ${fileList(r.files)}; it stays on ${desk.branch} until ${name} merges ${trunk} into it`;
           ui.status(line);
@@ -1211,6 +1259,129 @@ export class Room {
     const trunk = this.state.branch;
     if (!desk || !trunk) return 0;
     return commitsAhead(this.opts.cwd, trunk, desk.branch).catch(() => 0);
+  }
+
+  // ---- the trunk and your branch ----
+
+  /** Where the trunk is checked out: its own worktree with desks, else your directory. */
+  get trunkDir(): string {
+    return this.useDesks ? join(this.stateDir, "trunk") : this.opts.cwd;
+  }
+
+  /**
+   * The trunk gets its own worktree, cut from the branch your checkout is on,
+   * which the room remembers as its base. Your checkout is never switched.
+   */
+  private async openTrunk(): Promise<void> {
+    const cwd = this.opts.cwd;
+    const branch = `room/${this.opts.name}`;
+    const current = await currentBranch(cwd);
+    if (current === branch) {
+      throw new ConfigError(
+        `your checkout is on ${branch}, the room's trunk (rooms before this version checked it out in your directory). ` +
+          `Check out your own branch (git checkout ${this.state.base?.branch ?? "<your branch>"}) and open the room again.`,
+      );
+    }
+    this.state.base ??= { branch: current === "HEAD" ? undefined : current, sha: (await revParse(cwd, "HEAD"))! };
+    this.state.branch = branch;
+    await ensureWorktree(cwd, this.trunkDir, branch, this.state.base.sha);
+  }
+
+  /**
+   * Bring your branch into the trunk when it has moved: fast-forward, or a
+   * clean merge. A conflict, or a branch that was rewritten, is left to you,
+   * and said once. Desks are never touched: their seats are told.
+   */
+  private async syncBase(): Promise<void> {
+    const base = this.state.base;
+    if (!this.useDesks || !base?.branch) return;
+    const { ui } = this.opts;
+    const tip = await revParse(this.opts.cwd, base.branch);
+    if (!tip) {
+      if (base.seen !== "gone") ui.status(`your branch ${base.branch} is gone; the trunk carries on from where it was`);
+      base.seen = "gone";
+      return;
+    }
+    if (tip === base.seen) return;
+    const previous = base.seen ?? base.sha;
+    base.seen = tip;
+    this.saveState();
+    if (await isAncestor(this.trunkDir, tip, "HEAD")) return;
+    if (!(await isAncestor(this.opts.cwd, previous, tip))) {
+      const line = `your branch ${base.branch} was rewritten (rebased or reset) since the room last saw it; the room will not merge it. To bring it in: cd ${this.trunkDir} && git merge ${base.branch}`;
+      ui.status(line);
+      this.transcript.append("room", "system", line);
+      return;
+    }
+    await this.withTrunk(async () => {
+      const r = await mergeRef(this.trunkDir, base.branch!, this.opts.human);
+      if (r.status === "merged") {
+        const line = `${this.opts.human}'s ${base.branch} came into ${this.state.branch}: ${r.commits} commit${r.commits === 1 ? "" : "s"}, ${r.stat} (${fileList(r.files)})`;
+        ui.status(line);
+        this.transcript.append("room", "commit", line);
+      } else if (r.status === "conflict") {
+        const line =
+          `${this.opts.human}'s ${base.branch} conflicts with ${this.state.branch} in ${fileList(r.files)}, so the room did not bring it in. ` +
+          `To resolve: cd ${this.trunkDir} && git merge ${base.branch}`;
+        ui.status(line);
+        this.transcript.append("room", "system", line);
+      }
+    });
+  }
+
+  /** Say when your checkout has uncommitted changes, which seats cannot see; once per set of files. */
+  private async checkDirty(): Promise<void> {
+    const files = await dirtyFiles(this.opts.cwd);
+    const key = files.join("\n");
+    if (key === this.lastDirty) return;
+    this.lastDirty = key;
+    if (files.length) this.opts.ui.status(`your checkout has uncommitted changes (${fileList(files)}); seats see only what you commit`);
+  }
+
+  /** After a landing: how far the trunk is ahead of your branch. */
+  private async noteAhead(): Promise<void> {
+    const base = this.state.base?.branch;
+    if (!base || !this.state.branch) return;
+    const ahead = await commitsAhead(this.opts.cwd, base, this.state.branch).catch(() => 0);
+    if (ahead > 0) this.opts.ui.status(`${this.state.branch} is ${ahead} commit${ahead === 1 ? "" : "s"} ahead of your ${base}; /sync brings them into it`);
+  }
+
+  /** `/sync`: fast-forward your branch to the trunk, when it is checked out and nothing is in the way. */
+  async syncOut(): Promise<string> {
+    const base = this.state.base?.branch;
+    const trunk = this.state.branch;
+    if (!this.useDesks || !base || !trunk) return "sync needs a room with desks, opened from a branch";
+    await this.syncBase();
+    const current = await currentBranch(this.opts.cwd);
+    if (current !== base) return `your checkout is on ${current}, not ${base}; check out ${base}, or merge ${trunk} yourself`;
+    const ahead = await commitsAhead(this.opts.cwd, base, trunk);
+    if (ahead === 0) return `${base} already has everything on ${trunk}`;
+    if (await fastForward(this.opts.cwd, trunk)) {
+      this.state.base!.seen = await revParse(this.opts.cwd, base);
+      this.saveState();
+      return `${base} now has the room's work: ${ahead} commit${ahead === 1 ? "" : "s"} from ${trunk}`;
+    }
+    const dirty = await dirtyFiles(this.opts.cwd);
+    return dirty.length
+      ? `your uncommitted changes are in the way (${fileList(dirty)}); commit or stash them and /sync again`
+      : `${base} and ${trunk} have both moved; merge it yourself: git merge ${trunk}`;
+  }
+
+  /**
+   * Running the room from a build of this very repo? Say when the trunk lacks
+   * the commit it was built from: seats would be editing older source than
+   * the code that runs them.
+   */
+  private async checkBuild(): Promise<void> {
+    const stamp = buildStamp();
+    if (!stamp?.sha || !this.state.branch) return;
+    const top = await topLevel(this.opts.cwd);
+    if (!top || top !== stamp.toplevel) return;
+    if (await isAncestor(this.opts.cwd, stamp.sha, this.state.branch)) return;
+    this.opts.ui.status(
+      `this room runs a build from ${stamp.sha.slice(0, 7)}${stamp.branch ? ` (${stamp.branch})` : ""}, which ${this.state.branch} does not have: ` +
+        `seats editing the room's own code would edit older source`,
+    );
   }
 
   /** Commit the working tree as the human, if dirty, so seat commits contain only seat changes. */

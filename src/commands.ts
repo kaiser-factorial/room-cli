@@ -15,6 +15,7 @@ export const COMMAND_HELP = `  /seats                 seats, modes, and what is 
   /auto [on|off]         tool calls run without asking, except deny and ask rules
   /mode <seat> [id]      show or set a seat's session mode
   /unbench <seat>        bring back a seat benched after failing (so does @seat)
+  /sync                  bring the room's landed work into your branch (fast-forward; your checkout is never switched)
   /land <seat>           merge a seat's desk into the trunk now (seats land their own with [land])
   /bg <seat> <task>      the seat works on it in its desk while the room goes on
   /stop <seat>           cancel a seat's background work
@@ -55,6 +56,10 @@ export async function runCommand(room: Room, text: string, out: (line: string) =
       else if (/^\d+$/.test(arg)) room.setCap(Number(arg), true);
       else return out(`  usage: /cap <n>, /cap +<n>, or /cap off`);
       out(`  seat-to-seat cap: ${room.cap ?? "off"} per thread`);
+      return;
+    }
+    case "/sync": {
+      out(`  ${await room.syncOut()}`);
       return;
     }
     case "/mod": {

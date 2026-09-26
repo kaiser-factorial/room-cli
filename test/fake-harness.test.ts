@@ -273,8 +273,8 @@ describe("Room against fake harnesses", () => {
 
     await room.say("@b >> edit calc.py return a + b\n>> land");
     expect(u.asked).toEqual(["b: Edit calc.py"]);
-    expect(readFileSync(join(cwd, "calc.py"), "utf8")).toBe("return a + b\n");
-    expect(git("log", "-1", "--format=%an %s")).toMatch(/^b b: turn/);
+    expect(readFileSync(join(room.trunkDir, "calc.py"), "utf8")).toBe("return a + b\n");
+    expect(git("log", "-1", "--format=%an %s", "room/fake")).toMatch(/^b b: turn/);
     expect(room.transcript.entries.at(-1)).toMatchObject({ kind: "commit", text: expect.stringMatching(/^b landed 1 commit on room\/fake /) });
     await room.stop();
   }, 60_000);

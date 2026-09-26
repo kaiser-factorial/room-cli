@@ -18,7 +18,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && node scripts/stamp.mjs",
     "prepack": "pnpm run build",
     "dev": "tsx bin/room.ts",
     "test": "vitest run",
