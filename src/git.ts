@@ -143,7 +143,18 @@ export async function diffText(cwd: string, args: string[]): Promise<string> {
  * packages/room/node_modules), but only paths git ignores, so a link is
  * never committed. Returns what was linked, relative to the repo.
  */
-export async function linkIgnored(cwd: string, desk: string): Promise<string[]> {
+/** What a desk borrows from the main checkout by default: dependency folders and env files, whatever the language. */
+export const DEFAULT_DESK_LINKS = ["node_modules", ".venv", "venv", "__pypackages__", ".env*"];
+
+/** `.env*` style patterns: `*` matches anything. */
+function matcher(patterns: string[]): (name: string) => boolean {
+  const res = patterns.map((p) => new RegExp("^" + p.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*") + "$"));
+  return (name) => res.some((r) => r.test(name));
+}
+
+export async function linkIgnored(cwd: string, desk: string, patterns: string[] = DEFAULT_DESK_LINKS): Promise<string[]> {
+  if (!patterns.length) return [];
+  const wanted = matcher(patterns);
   const top = await git(cwd, ["rev-parse", "--show-toplevel"]);
   const candidates: string[] = [];
   const scan = (rel: string, depth: number) => {
@@ -155,7 +166,7 @@ export async function linkIgnored(cwd: string, desk: string): Promise<string[]> 
     }
     for (const n of names) {
       const r = rel ? join(rel, n) : n;
-      if (n === "node_modules" || /^\.env(\..+)?$/.test(n)) candidates.push(r);
+      if (wanted(n)) candidates.push(r);
       else if (depth > 0 && !n.startsWith(".") && isDirSync(join(top, r))) scan(r, depth - 1);
     }
   };

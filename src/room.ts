@@ -72,6 +72,8 @@ export interface RoomOptions {
   skills?: Skill[];
   /** MCP servers from the harnesses' configs to hand to every seat (not back to the harness that has it). */
   shareMcp?: McpServerEntry[];
+  /** Ignored paths a desk links from the main checkout (globs by name). Default: DEFAULT_DESK_LINKS; [] for none. */
+  deskLinks?: string[];
   /** Serve the room's MCP tools (inbox, post, status, show, diff) to seats that take them. Default: true. */
   tools?: boolean;
   /** Seat factory, for tests. */
@@ -365,7 +367,7 @@ export class Room {
           const desk = { path: join(this.stateDir, "desks", s.name), branch: `desk/${this.opts.name}/${s.name}` };
           await ensureWorktree(this.opts.cwd, desk.path, desk.branch, this.state.branch);
           desks[s.name] = desk;
-          const linked = await linkIgnored(this.opts.cwd, desk.path).catch(() => []);
+          const linked = await linkIgnored(this.opts.cwd, desk.path, this.opts.deskLinks).catch(() => []);
           if (linked.length) this.linked = linked;
         }
         ui.status(`git: trunk ${this.state.branch}; each seat works and commits in its own desk, and lands its work with [land]`);

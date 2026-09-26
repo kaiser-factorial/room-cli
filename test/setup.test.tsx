@@ -149,12 +149,12 @@ describe("desks share the main checkout's ignored deps", () => {
     const cwd = tmp("repo");
     const git = (...a: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd });
     git("init", "-q", "-b", "main");
-    writeFileSync(join(cwd, ".gitignore"), "node_modules\n.env*\n");
+    writeFileSync(join(cwd, ".gitignore"), "node_modules\n.env.local\n");
     mkdirSync(join(cwd, "node_modules", "x"), { recursive: true });
     mkdirSync(join(cwd, "packages", "app", "node_modules"), { recursive: true });
     writeFileSync(join(cwd, "packages", "app", "index.ts"), "");
     writeFileSync(join(cwd, ".env.local"), "K=1");
-    writeFileSync(join(cwd, ".envrc-tracked"), "");
+    writeFileSync(join(cwd, ".env.example"), "K=");
     git("add", "-A");
     git("commit", "-q", "-m", "seed");
     const desk = join(cwd, ".room", "d", "desks", "a");
@@ -163,6 +163,21 @@ describe("desks share the main checkout's ignored deps", () => {
     expect(linked.sort()).toEqual([".env.local", "node_modules", join("packages", "app", "node_modules")].sort());
     expect(existsSync(join(desk, "node_modules", "x"))).toBe(true);
     expect(execFileSync("git", ["status", "--porcelain"], { cwd: desk, encoding: "utf8" })).toBe("");
+  });
+
+  it("links a Python venv too, only what exists, and nothing when turned off", async () => {
+    const cwd = tmp("py");
+    const git = (...a: string[]) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...a], { cwd });
+    git("init", "-q", "-b", "main");
+    writeFileSync(join(cwd, ".gitignore"), ".venv\n");
+    mkdirSync(join(cwd, ".venv", "lib"), { recursive: true });
+    writeFileSync(join(cwd, "app.py"), "");
+    git("add", "-A");
+    git("commit", "-q", "-m", "seed");
+    const desk = join(cwd, ".room", "d", "desks", "a");
+    git("worktree", "add", "-q", "-b", "desk/a", desk);
+    expect(await linkIgnored(cwd, desk, [])).toEqual([]);
+    expect(await linkIgnored(cwd, desk)).toEqual([".venv"]);
   });
 });
 

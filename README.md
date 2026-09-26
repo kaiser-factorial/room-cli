@@ -84,11 +84,20 @@ servers in `~/.claude.json`, `.mcp.json`, `~/.codex/config.toml`, and
 
 ### Desks can build
 
-A desk is a fresh checkout, so the room links the main checkout's
-`node_modules` (top level and a couple of levels down) and `.env*` files
-into it, only where git ignores them, so a link is never committed. Seats
-can run, test, and typecheck; they are told not to install into the shared
-`node_modules`.
+A desk is a fresh checkout, so it lacks whatever your checkout has that
+git ignores: installed dependencies, a virtualenv, env files. The room
+links those into each desk from the main checkout, when they exist there
+and git ignores them (so a link is never committed): by default
+`node_modules`, `.venv`, `venv`, `__pypackages__`, and `.env*`, at the top
+and a couple of levels down. A project with none of them gets nothing.
+Set your own list with `deskLinks = [...]` in `~/.config/room/config.toml`
+(`[]` turns it off).
+
+Anything installed outside the project (global, pyenv, conda, pip
+`--user`, Homebrew) needs nothing: seats run on your machine with your
+PATH, so imports work as usual. One catch: a package installed editable
+(`pip install -e`) or as a workspace link points at the main checkout's
+source, not the desk's; seats are told.
 
 ### Where rooms are kept, and what they cost
 

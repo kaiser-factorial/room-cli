@@ -31,6 +31,8 @@ export interface Settings {
   shareSkills?: boolean;
   /** MCP servers (by name, from any harness's config) to hand to every seat. */
   shareMcp?: string[];
+  /** Ignored paths a desk borrows from the main checkout by link (names, * allowed). [] turns it off. */
+  deskLinks?: string[];
 }
 
 export function configDir(env: NodeJS.ProcessEnv = process.env): string {
@@ -71,6 +73,7 @@ export function loadSettings(env: NodeJS.ProcessEnv = process.env): Settings {
     tui: typeof doc.tui === "boolean" ? doc.tui : undefined,
     shareSkills: typeof doc.shareSkills === "boolean" ? doc.shareSkills : undefined,
     shareMcp: strs(doc.shareMcp),
+    deskLinks: strs(doc.deskLinks),
   };
 }
 

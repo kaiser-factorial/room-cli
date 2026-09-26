@@ -228,6 +228,7 @@ async function runRoom(name: string, lineupSeats: SeatConfig[], opts: StartOptio
     turnTimeoutMs: Number(opts.turnTimeout) * 1000,
     skills: saved.shareSkills === false ? [] : findSkills({ cwd }),
     shareMcp: found.filter((m) => saved.shareMcp?.includes(m.name)),
+    deskLinks: saved.deskLinks,
   };
   const moderator = opts.moderator ?? saved.moderator ?? "auto";
   if (tui) {
