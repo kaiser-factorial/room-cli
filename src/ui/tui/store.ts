@@ -65,6 +65,12 @@ export class TuiStore extends EventEmitter {
     this.changed();
   }
 
+  /** A seat's mid-turn `post`: its own block, finished at once. */
+  posted(seat: string, text: string): void {
+    this.finished.push(this.block("seat", [{ type: "text", text: sanitizeForTerminal(text) }], seat));
+    this.changed();
+  }
+
   status(line: string): void {
     this.finished.push(this.block("status", [{ type: "text", text: sanitizeForTerminal(line) }]));
     this.changed();

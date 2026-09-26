@@ -35,6 +35,8 @@ export interface PreambleOptions {
   branch?: string;
   /** The seat's own worktree, when the room gives seats desks. */
   desk?: { path: string; branch: string };
+  /** Whether the seat has the room's MCP tools. */
+  tools?: boolean;
 }
 
 /** The web app's role presets, as `/role` lists them. */
@@ -78,6 +80,9 @@ export function buildPreamble(o: PreambleOptions): string {
     `Passing: reply with exactly \`${PASS}\` when you have nothing to add. Silence is a valid contribution and the human prefers it to filler.`,
     perms,
     git,
+    o.tools
+      ? `Room tools: you have an MCP server named \`room\`. While you work, \`inbox\` shows what others posted since you last read (worth a look between long steps, in case someone redirects you), \`post\` puts a short message in the room now (progress, a question, a heads-up; tag with @name to wake someone), \`status\` says who is busy, \`show\` gives a message in full with its tool calls, and \`diff\` shows a seat's work not landed yet. Post sparingly: your final reply is posted anyway.`
+      : "",
     `Keep replies short unless you are doing work. When you change files, say what you changed and where.`,
   ]
     .filter(Boolean)

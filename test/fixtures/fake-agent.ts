@@ -25,11 +25,15 @@
  *   >> mention <name> <txt>  say "@name txt"
  *   >> commit <message>      git add -A and commit in the session's directory
  *   >> land                  say [land]
+ *   >> tool <name> <json>    call a tool on the MCP server named "room" the
+ *                            client handed over (HTTP with --mcp-http, else stdio)
  * `{agent}` in an edit's text becomes the seat's git author name, so seats
  * given one instruction write different lines.
  * With no directive it says "ok".
  */
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { request } from "node:http";
+import { createInterface } from "node:readline";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -52,7 +56,48 @@ const cfg = {
   failSession: opt("--fail-session"),
   stateDir: opt("--state-dir") ?? process.env.FAKE_AGENT_STATE ?? join(tmpdir(), "fake-agent-state"),
   strayReply: opt("--stray-reply"),
+  mcpHttp: flag("--mcp-http"),
 };
+
+/** MCP servers each session was given; not persisted, as a real harness would re-read them on resume. */
+const mcpBySession = new Map<string, acp.McpServer[]>();
+
+function httpPost(url: string, body: unknown): Promise<string> {
+  return new Promise((res, rej) => {
+    const req = request(url, { method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" } }, (r) => {
+      let t = "";
+      r.setEncoding("utf8");
+      r.on("data", (c: string) => (t += c));
+      r.on("end", () => res(t));
+    });
+    req.on("error", rej);
+    req.end(JSON.stringify(body));
+  });
+}
+
+/** The first text of a tools/call result from the room's server. */
+async function callRoomTool(sessionId: string, name: string, args: unknown): Promise<string> {
+  const server = mcpBySession.get(sessionId)?.find((m) => m.name === "room");
+  if (!server) return "no room server";
+  const init = { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "fake", version: "1" } } };
+  const call = { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name, arguments: args } };
+  let reply: { result?: { content: Array<{ text: string }>; isError?: boolean }; error?: { message: string } };
+  if ("url" in server) {
+    await httpPost(server.url, init);
+    reply = JSON.parse(await httpPost(server.url, call));
+  } else {
+    const child = spawn(server.command, server.args, { stdio: ["pipe", "pipe", "inherit"] });
+    const lines = createInterface({ input: child.stdout! });
+    const got = new Promise<string>((res) => lines.on("line", (l) => JSON.parse(l).id === 2 && res(l)));
+    child.stdin!.write(JSON.stringify(init) + "\n");
+    child.stdin!.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
+    child.stdin!.write(JSON.stringify(call) + "\n");
+    reply = JSON.parse(await got);
+    child.kill();
+  }
+  if (reply.error) return `error: ${reply.error.message}`;
+  return `${reply.result?.isError ? "error: " : ""}${reply.result?.content[0]?.text ?? ""}`;
+}
 
 /** A reply nobody asked for, written after the current response has gone out. */
 function strayReply(): void {
@@ -153,6 +198,12 @@ async function runPrompt(sessionId: string, text: string, cx: Cx, signal: AbortS
       case "recall":
         await say(s.memory ?? "nothing");
         break;
+      case "tool": {
+        const [name, ...rest] = d.arg.split(" ");
+        const out = await callRoomTool(sessionId, name, rest.length ? JSON.parse(rest.join(" ")) : {});
+        await say(`tool ${name}: ${out}`);
+        break;
+      }
       case "sleep":
         await sleep(Number(d.arg), signal);
         await say("woke");
@@ -256,6 +307,7 @@ async function main() {
       agentInfo: { name: "fake-agent", version: "1.0.0" },
       agentCapabilities: {
         loadSession: cfg.load,
+        mcpCapabilities: { http: cfg.mcpHttp },
         sessionCapabilities: cfg.resume ? { resume: {} } : {},
       },
       authMethods: [],
@@ -268,6 +320,7 @@ async function main() {
       const sessionId = `fake-${Math.random().toString(36).slice(2, 10)}`;
       const s: State = { cwd: ctx.params.cwd, mode: cfg.modes ? "auto" : "default", history: [] };
       sessions.set(sessionId, s);
+      mcpBySession.set(sessionId, ctx.params.mcpServers);
       saveState(sessionId, s);
       strayReply();
       return { sessionId, modes: modes() ?? null };
@@ -285,6 +338,7 @@ async function main() {
       if (!s) throw new Error("no such session");
       s.cwd = ctx.params.cwd;
       sessions.set(ctx.params.sessionId, s);
+      mcpBySession.set(ctx.params.sessionId, ctx.params.mcpServers);
       return { modes: modes() ?? null };
     })
     .onRequest(acp.methods.agent.session.load, async (ctx) => {

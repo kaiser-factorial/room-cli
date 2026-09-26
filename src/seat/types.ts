@@ -110,4 +110,6 @@ export interface Seat {
   /** Session modes, when the agent advertises them. */
   readonly modes?: { current?: string; available: Array<{ id: string; name: string }> };
   setMode?(modeId: string): Promise<void>;
+  /** Hand the room's MCP server (inbox, post, ...) to the sessions this seat opens. */
+  useMcp?(endpoint: { name: string; url: string; bridge: { command: string; args: string[] } }): void;
 }

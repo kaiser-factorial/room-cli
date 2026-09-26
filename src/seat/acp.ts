@@ -23,6 +23,7 @@ import type {
   ToolContentView,
 } from "./types.js";
 import { childEnv, resolveCommand } from "../env.js";
+import type { McpEndpoint } from "../server/mcp.js";
 
 const STDERR_TAIL_BYTES = 16384;
 
@@ -75,6 +76,8 @@ export class AcpSeat implements Seat {
   /** Ends the reader of the turn before this one. */
   private supersede?: () => void;
   private exitInfo?: { code: number | null; signal: NodeJS.Signals | null };
+  /** The room's MCP server, handed to every session this seat opens. */
+  private roomMcp?: McpEndpoint;
 
   constructor(
     readonly config: SeatConfig,
@@ -143,8 +146,23 @@ export class AcpSeat implements Seat {
     return this.conn.agent;
   }
 
+  /** Give this seat's sessions the room's tools. Set before newSession/resumeSession. */
+  useMcp(endpoint: McpEndpoint): void {
+    this.roomMcp = endpoint;
+  }
+
+  /** The room's server as this agent can take it: HTTP when advertised, else the stdio bridge. */
+  private mcpServers(): acp.McpServer[] {
+    const m = this.roomMcp;
+    if (!m) return [];
+    const http = (this.caps as { mcpCapabilities?: { http?: boolean } } | undefined)?.mcpCapabilities?.http;
+    return http
+      ? [{ type: "http", name: m.name, url: m.url, headers: [] }]
+      : [{ name: m.name, command: m.bridge.command, args: m.bridge.args, env: [] }];
+  }
+
   async newSession(cwd: string): Promise<string> {
-    const res = await this.agent().request(acp.methods.agent.session.new, { cwd, mcpServers: [] });
+    const res = await this.agent().request(acp.methods.agent.session.new, { cwd, mcpServers: this.mcpServers() });
     this.newSessionResponse = res;
     this.sid = res.sessionId;
     this.updates.clear();
@@ -162,10 +180,10 @@ export class AcpSeat implements Seat {
     try {
       let res: { modes?: acp.SessionModeState | null; configOptions?: acp.NewSessionResponse["configOptions"] } | void;
       if (sessionCaps.resume) {
-        res = await this.agent().request(acp.methods.agent.session.resume, { sessionId, cwd, mcpServers: [] });
+        res = await this.agent().request(acp.methods.agent.session.resume, { sessionId, cwd, mcpServers: this.mcpServers() });
       } else if (caps?.loadSession) {
         this.sid = sessionId; // route the replay into the queue, then discard it
-        res = await this.agent().request(acp.methods.agent.session.load, { sessionId, cwd, mcpServers: [] });
+        res = await this.agent().request(acp.methods.agent.session.load, { sessionId, cwd, mcpServers: this.mcpServers() });
       } else {
         return false;
       }

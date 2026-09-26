@@ -131,3 +131,8 @@ export async function mergeRef(cwd: string, ref: string, author: string): Promis
   const files = (await git(cwd, ["diff", "--name-only", before, "HEAD"])).split("\n").filter(Boolean);
   return { status: "merged", sha, commits, stat, files };
 }
+
+/** `git diff <args>`, for showing a seat's work. */
+export async function diffText(cwd: string, args: string[]): Promise<string> {
+  return git(cwd, ["diff", ...args]);
+}

@@ -5,7 +5,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { ConfigError, validateSeatName } from "./config.js";
-import { commitsAhead, commitTurn, ensureRoomBranch, ensureWorktree, headSha, headSubject, isRepo, mergeRef } from "./git.js";
+import { commitsAhead, commitTurn, diffText, ensureRoomBranch, ensureWorktree, headSha, headSubject, isRepo, mergeRef } from "./git.js";
 import { emptyPolicy, makeDecider, type Action, type HumanChoice, type Policy, type SeatPolicy } from "./permissions.js";
 import { BACKGROUND, buildPreamble, LAND, PASS, roleList, rolePrompt } from "./preamble.js";
 import { humanTags, parseAddress, scanMentions } from "./scheduler.js";
@@ -15,6 +15,7 @@ import { pickAskMode } from "./seat/modes.js";
 import type { PermissionDecider, PermissionRequestView, Seat, SeatConfig, SeatEvent } from "./seat/types.js";
 import { neutralizeLabels, renderDelta, Transcript, type Entry } from "./transcript.js";
 import { Activity } from "./activity.js";
+import { RoomMcp, type RoomTools } from "./server/mcp.js";
 
 export interface RoomUI {
   seatEvent(seat: string, ev: SeatEvent): void;
@@ -24,6 +25,8 @@ export interface RoomUI {
   sideEvent?(seat: string, ev: SeatEvent): void;
   askHuman(req: PermissionRequestView): Promise<HumanChoice>;
   status(line: string): void;
+  /** A seat posted mid-turn with the room's `post` tool. Without it: `status`. */
+  posted?(seat: string, text: string): void;
 }
 
 export type RoomMode = "sequential" | "parallel";
@@ -54,6 +57,8 @@ export interface RoomOptions {
   wake?: "last" | "all";
   /** Seat-to-seat wakes per thread for a new room; null for no limit. */
   cap?: number | null;
+  /** Serve the room's MCP tools (inbox, post, status, show, diff) to seats that take them. Default: true. */
+  tools?: boolean;
   /** Seat factory, for tests. */
   makeSeat?: (config: SeatConfig, decide: PermissionDecider, notice: (text: string) => void) => Seat;
 }
@@ -172,6 +177,12 @@ export class Room {
   private threadCount = 0;
   /** Seats whose turn is being set up (git work before the prompt), so nothing else starts them. */
   private readonly starting = new Set<string>();
+  /** The room's MCP server, when seats get its tools. */
+  private mcp?: RoomMcp;
+  /** Seats given the room's tools, told about them in their preamble. */
+  private readonly withTools = new Set<string>();
+  /** How far a seat mid-turn has read, its prompt plus what `inbox` showed it. */
+  private readonly reading = new Map<string, number>();
 
   private constructor(readonly opts: RoomOptions) {
     for (const s of opts.seats) {
@@ -336,12 +347,17 @@ export class Room {
       onAllowAlways: (seat, pattern) => this.addRule(seat, "allow", pattern),
       log: (line) => ui.status(line),
     });
+    if (this.opts.tools !== false) {
+      this.mcp = new RoomMcp(this.toolsFor());
+      await this.mcp.start();
+    }
     try {
       await this.startSeats(decide, movedIn);
     } catch (err) {
       // One seat failing must not leave the others running.
       await Promise.all([...this.seats.values()].map((s) => s.stop().catch(() => undefined)));
       this.seats.clear();
+      await this.mcp?.stop();
       throw err;
     }
     // A reopened room with a different lineup: say so, or seats keep addressing whoever left.
@@ -393,6 +409,10 @@ export class Room {
         const seat = this.opts.makeSeat ? this.opts.makeSeat(config, decide, notice) : createSeat(config, decide, notice);
         this.seats.set(config.name, seat);
         const info = await seat.start();
+        if (this.mcp && seat.useMcp) {
+          seat.useMcp(this.mcp.endpoint(config.name));
+          this.withTools.add(config.name);
+        }
         // A reopened room: reattach to the seat's saved session, or start fresh and replay.
         const saved = this.state.sessions[config.name];
         const seen = this.state.cursors[config.name];
@@ -548,6 +568,12 @@ export class Room {
   // ---- threads: who answers, in what order ----
 
   private startThread(queue: string[]): Promise<RoundResult> {
+    const { done } = this.newThread(queue);
+    this.pump();
+    return done;
+  }
+
+  private newThread(queue: string[]): { thread: Thread; done: Promise<RoundResult> } {
     let resolve!: (r: RoundResult) => void;
     const done = new Promise<RoundResult>((r) => (resolve = r));
     const thread: Thread = {
@@ -561,8 +587,7 @@ export class Room {
       resolve,
     };
     this.threads.push(thread);
-    this.pump();
-    return done;
+    return { thread, done };
   }
 
   /**
@@ -740,6 +765,7 @@ export class Room {
     const { ui } = this.opts;
     await this.syncDesk(name);
     const snapshot = this.transcript.last;
+    this.reading.set(name, snapshot);
     const prompt =
       this.buildPrompt(name, false) +
       `\n\n[room]: You are working in the background on: ${task}\n` +
@@ -750,8 +776,9 @@ export class Room {
       ? { text: "", stopReason: "cancelled", activity: new Activity() }
       : await this.collectTurn(name, prompt, show, this.opts.backgroundTimeoutMs ?? 60 * 60_000);
     const entry = this.recordTurn(name, result);
-    // It saw the room up to when it left, and not what was said while it worked.
-    this.state.cursors[name] = snapshot;
+    // It saw the room up to when it left, plus what it read with `inbox`, and not the rest said while it worked.
+    this.state.cursors[name] = Math.max(snapshot, this.reading.get(name) ?? 0);
+    this.reading.delete(name);
     if (result.stopReason === "cancelled" || result.failure) {
       // Half-done: committed on the desk, never landed by its reply; the human decides with /land.
       await this.closeTurn(name, entry, "");
@@ -811,6 +838,7 @@ export class Room {
           promptsForwarded: config.adapter === "acp" && !(config.deny?.includes("*") || config.allow?.includes("*")),
           branch: this.state.branch,
           desk: this.state.desks?.[name],
+          tools: this.withTools.has(name),
         }) + "\n\n---\n\n"
       : "";
     const note = !parallel
@@ -916,10 +944,12 @@ export class Room {
     if (how.cancelled?.()) return undefined;
     const prompt = this.buildPrompt(name, Boolean(how.parallel));
     const snapshot = this.transcript.last;
+    this.reading.set(name, snapshot);
     const headBefore = this.useGit ? await headSha(this.opts.cwd).catch(() => undefined) : undefined;
     const result = await this.collectTurn(name, prompt, how.emit ?? ((ev) => ui.seatEvent(name, ev)));
     const entry = this.recordTurn(name, result);
-    this.state.cursors[name] = this.seenThrough(name, snapshot);
+    this.state.cursors[name] = this.seenThrough(name, Math.max(snapshot, this.reading.get(name) ?? 0));
+    this.reading.delete(name);
 
     if (this.useDesks) {
       await this.closeTurn(name, entry, result.text);
@@ -1057,6 +1087,109 @@ export class Room {
     }
   }
 
+  // ---- the room's MCP tools, called by a seat mid-turn ----
+
+  private toolsFor(): RoomTools {
+    return {
+      inbox: (seat) => this.inbox(seat),
+      post: (seat, text) => this.post(seat, text),
+      status: (seat) => this.statusFor(seat),
+      show: (seat, args) => this.show(args),
+      diff: (seat, args) => this.diffFor(seat, args.seat ?? seat),
+    };
+  }
+
+  /** What others said since the seat last read; marks it read, so its next turn does not repeat it. */
+  private inbox(seat: string): string {
+    const from = this.reading.get(seat) ?? this.state.cursors[seat] ?? 0;
+    const news = this.transcript.since(from).filter((e) => e.from !== seat);
+    if (this.reading.has(seat)) this.reading.set(seat, this.transcript.last);
+    const text = renderDelta(news, seat, [this.opts.human, "room"]);
+    return text || "Nothing new.";
+  }
+
+  /** Post now, mid-turn. Tags on its first or last line wake seats as a reply's would. */
+  private post(seat: string, text: string): string {
+    if (!this.active.has(seat)) throw new Error("post works during your turn only; reply normally instead");
+    if (text === PASS) return "Not posted: passing is for your final reply.";
+    this.transcript.append(seat, "message", text);
+    const { ui } = this.opts;
+    if (ui.posted) ui.posted(seat, text);
+    else ui.status(`${seat} posted: ${text}`);
+    if (!this.background.has(seat) || /@/.test(text)) {
+      const t = this.threads.find((x) => x.answering.has(seat)) ?? this.newThread([]).thread;
+      this.route(t, seat, text);
+      this.pump();
+    }
+    return "Posted.";
+  }
+
+  private statusFor(seat: string): string {
+    const queued = this.queued;
+    const rows = this.seatNames.map((s) => {
+      const state = this.background.has(s)
+        ? "working in the background"
+        : this.active.has(s) || this.starting.has(s)
+          ? "answering"
+          : this.benched.has(s)
+            ? "benched"
+            : queued.includes(s)
+              ? `queued (${queued.indexOf(s) + 1})`
+              : "idle";
+      return `- ${s}${s === seat ? " (you)" : ""}: ${state}${this.roleOf(s) ? `, role ${this.roleOf(s)}` : ""}`;
+    });
+    const cap = this.cap;
+    return [
+      `Room "${this.opts.name}", ${this.opts.human} is the human.`,
+      ...rows,
+      `mode ${this.state.mode}; untagged messages wake ${this.state.wake === "all" ? "everyone" : "whoever spoke last"}; ` +
+        `seat-to-seat wakes per thread: ${cap === null ? "no limit" : cap}` +
+        (this.useDesks ? `; trunk ${this.state.branch}` : ""),
+    ].join("\n");
+  }
+
+  private show(args: { id?: number; from?: string; last?: number }): string {
+    const all = this.transcript.entries;
+    let picked: Entry[];
+    if (args.id !== undefined) {
+      const e = all.find((x) => x.id === args.id);
+      if (!e) throw new Error(`no entry ${args.id} (last is ${this.transcript.last})`);
+      picked = [e];
+    } else {
+      const n = Math.min(Math.max(1, Math.floor(args.last ?? 5)), 50);
+      const from = args.from?.toLowerCase();
+      picked = all.filter((e) => !from || e.from.toLowerCase() === from).slice(-n);
+    }
+    if (!picked.length) return "No entries.";
+    return picked
+      .map((e) => {
+        const steps = e.steps?.items.filter((i) => "tool" in i).map((i) => `  tool: ${(i as { tool: string }).tool}`) ?? [];
+        const body = e.kind === "pass" ? "(passed)" : neutralizeLabels(e.text);
+        return [`#${e.id} [${e.from}] ${e.kind} ${e.ts}`, body, ...steps].join("\n");
+      })
+      .join("\n\n");
+  }
+
+  private async diffFor(caller: string, target: string): Promise<string> {
+    const seat = this.seatNames.find((s) => s.toLowerCase() === target.toLowerCase());
+    if (!seat) throw new Error(`no seat ${target} (have: ${this.seatNames.join(", ")})`);
+    if (!this.useGit) return "The room is not in a git repo; there is nothing to diff against.";
+    const cap = (text: string) => (text.length > 30_000 ? `${text.slice(0, 30_000)}\n… (cut at 30000 characters)` : text);
+    const desk = this.state.desks?.[seat];
+    const trunk = this.state.branch;
+    if (desk && trunk) {
+      const landed = await diffText(this.opts.cwd, [`${trunk}...${desk.branch}`]);
+      const loose = await diffText(desk.path, ["HEAD"]).catch(() => "");
+      const parts = [
+        landed ? `Committed on ${desk.branch}, not on ${trunk} yet:\n${landed}` : `${seat} has no commits that ${trunk} lacks.`,
+        loose ? `Uncommitted in ${seat === caller ? "your" : `${seat}'s`} desk:\n${loose}` : "",
+      ].filter(Boolean);
+      return cap(parts.join("\n\n"));
+    }
+    const loose = await diffText(this.opts.cwd, ["HEAD"]);
+    return cap(loose ? `Uncommitted in the shared directory (all seats):\n${loose}` : "No uncommitted changes.");
+  }
+
   // ---- permissions and modes, for the REPL ----
 
   policyOf(seat: string): SeatPolicy {
@@ -1107,6 +1240,7 @@ export class Room {
     await Promise.all([...this.background.keys()].map((n) => this.stopBackground(n, 3000)));
     await Promise.all([...this.seats.values()].map((s) => s.stop().catch(() => undefined)));
     await Promise.race([Promise.allSettled(running), new Promise((r) => setTimeout(r, 2000))]);
+    await this.mcp?.stop();
     this.saveState();
   }
 

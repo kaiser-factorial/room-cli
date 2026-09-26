@@ -20,10 +20,10 @@ Design", https://claude.ai/code/artifact/8624261e-8ed2-45ea-ad01-d8b06166e1e1
 | 5 Ink TUI (`--tui`) | first version; REPL stays the default |
 | 6 desks: a worktree per seat, landing on the trunk | done, with `[land]`/`/land`, background turns, `/auto` |
 | threads step 1: event loop replaces rounds | done: wake rules, `@all`, `@seat!`, queue-at-end tags, `/cap`, `/wake`, echo pause |
-| threads step 2: room MCP server (`inbox`, `post`, `status`, `show`, `diff`) | next |
+| threads step 2: room MCP server (`inbox`, `post`, `status`, `show`, `diff`) | done; HTTP for Claude, stdio bridge otherwise; not yet tried with a live harness |
 | threads step 3: urgent interrupts polish, posting rate limits | later |
 
-Tests: `pnpm install && pnpm test` in `packages/room`, 113 tests, run
+Tests: `pnpm install && pnpm test` in `packages/room`, 120 tests, run
 anywhere with Node 22+. The room is no longer in the root's npm workspace:
 it has its own `pnpm-lock.yaml` (pnpm 11, build scripts allowed in
 `pnpm-workspace.yaml`), its own `vitest.config.ts`, and a `room` job in CI
@@ -51,6 +51,20 @@ queue, no double queueing, mid-turn seats are not re-woken, the cap holds
 extra wakes (`/cap +n` releases), and short back-and-forth is paused.
 The REPL and TUI no longer await `say`; concurrent turns render through
 `RoomUI.sideEvent`. Legacy tests opt into `wake: "all"`.
+
+## Room tools (step 2)
+
+`src/server/mcp.ts` is a hand-rolled MCP server (streamable HTTP, JSON
+replies only, no SDK dependency) started by `Room.start()`; each seat gets
+`/mcp/<token>`. `AcpSeat.useMcp()` passes it in `session/new`, `resume`,
+and `load`: as `type: "http"` when the agent advertises
+`mcpCapabilities.http` (claude-agent-acp does), else as a stdio server
+running `mcp-bridge.js` with the room's Node. `Room.reading` tracks how
+far a seat mid-turn has read (prompt plus `inbox`), and the cursor after
+the turn starts from there. `post` appends as the seat and routes its tags
+on the seat's thread. The fake agent's `>> tool <name> <json>` exercises
+both transports. Also fixed: `room acp` now holds a side-by-side seat's
+text until its turn ends, so parallel replies no longer interleave.
 
 ## Emulating the harnesses in the cloud
 

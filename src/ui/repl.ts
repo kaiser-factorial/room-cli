@@ -452,6 +452,14 @@ export class ReplUI implements RoomUI {
     }
   }
 
+  /** A seat's mid-turn `post`, whole, under its name. */
+  posted(seat: string, text: string): void {
+    this.newline();
+    this.out.write(`${this.seatName(seat)} ${this.style.dim("(post)")}: ${sanitizeForTerminal(text)}\n`);
+    this.lineStart = true;
+    this.speaker = undefined;
+  }
+
   status(line: string): void {
     this.newline();
     this.out.write(this.style.dim(`  [room] ${sanitizeForTerminal(line)}`) + "\n");

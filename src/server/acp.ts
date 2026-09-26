@@ -380,6 +380,30 @@ export class AcpServerUI implements RoomUI {
     }
   }
 
+  /** Replies from seats answering alongside another, held until each turn ends so they never interleave. */
+  private readonly sideText = new Map<string, string>();
+
+  sideEvent(seat: string, ev: SeatEvent): void {
+    if (ev.type === "text") {
+      this.sideText.set(seat, (this.sideText.get(seat) ?? "") + ev.text);
+      return;
+    }
+    if (ev.type === "stop") {
+      const held = this.sideText.get(seat);
+      this.sideText.delete(seat);
+      if (held) this.seatEvent(seat, { type: "text", text: held });
+      this.speaker = undefined;
+    }
+    this.seatEvent(seat, ev);
+  }
+
+  /** A seat's mid-turn `post`: its own paragraph. */
+  posted(seat: string, text: string): void {
+    this.paragraph();
+    this.text(`**${seat}>** ${sanitizeForTerminal(text)}`);
+    this.speaker = undefined;
+  }
+
   status(line: string): void {
     this.log(`[${this.sessionId}] ${line}`);
     this.paragraph();

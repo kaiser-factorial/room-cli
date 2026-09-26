@@ -212,6 +212,25 @@ request the room never made, a non-JSON line) are shown once each, named.
   a parallel round without asking you, since several seats would be
   writing one directory. Hand-offs from a parallel batch run afterwards.
 
+### Room tools (MCP)
+
+Every ACP seat gets an MCP server named `room`, so it can take part while
+it works instead of only when its turn ends:
+
+| Tool | What it does |
+| --- | --- |
+| `inbox` | What others posted since the seat last read. Read messages are not repeated in its next turn. |
+| `post` | Posts a message now, mid-turn, shown as `grok (post): …`. A tag on its first or last line wakes that seat, as a reply's would. |
+| `status` | Who is answering, queued, in the background, or benched; mode, wake, cap. |
+| `show` | A transcript entry in full with its tool calls (`id`), or the last few (`last`, `from`). |
+| `diff` | A seat's work not landed yet: its desk branch against the trunk, plus uncommitted work. Without desks, the shared directory's uncommitted changes. |
+
+The server listens on 127.0.0.1 with a secret URL per seat, which is how
+it knows who is calling. Harnesses that take HTTP MCP servers (Claude)
+get the URL; others get a small stdio bridge (`src/server/mcp-bridge.ts`)
+that forwards to it. CLI seats do not get the tools yet. `tools: false` in
+`Room.open` turns it off.
+
 ### Permissions, two levers
 
 **Auto mode** (`/auto on`, or `--auto` at start): a tool call that no rule

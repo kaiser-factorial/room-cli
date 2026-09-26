@@ -27,6 +27,9 @@ export class TuiUI implements RoomUI {
   askHuman(req: PermissionRequestView): Promise<HumanChoice> {
     return this.store.ask(req);
   }
+  posted(seat: string, text: string): void {
+    this.store.posted(seat, text);
+  }
   status(line: string): void {
     this.store.status(line);
   }
