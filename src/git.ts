@@ -108,7 +108,9 @@ export async function commitsAhead(cwd: string, from: string, to: string): Promi
 export type MergeResult =
   | { status: "up-to-date" }
   | { status: "merged"; sha: string; commits: number; stat: string; files: string[] }
-  | { status: "conflict"; files: string[] };
+  | { status: "conflict"; files: string[] }
+  /** A merge is already under way there (someone resolving a conflict), or tracked files are changed: not touched. */
+  | { status: "busy"; files: string[] };
 
 /**
  * Merge `ref` into the branch checked out at `cwd`, fast-forwarding when it
@@ -116,6 +118,9 @@ export type MergeResult =
  * as it was, and reported with the conflicted files.
  */
 export async function mergeRef(cwd: string, ref: string, author: string): Promise<MergeResult> {
+  // Never start a merge over one in progress, or over changes: the abort below would throw away someone's resolution.
+  const busy = await midMerge(cwd);
+  if (busy) return { status: "busy", files: busy };
   const before = await git(cwd, ["rev-parse", "HEAD"]);
   const commits = await commitsAhead(cwd, before, ref);
   if (commits === 0) return { status: "up-to-date" };
@@ -229,4 +234,20 @@ export async function fastForward(cwd: string, ref: string): Promise<boolean> {
 
 export async function topLevel(cwd: string): Promise<string | undefined> {
   return git(cwd, ["rev-parse", "--show-toplevel"]).catch(() => undefined);
+}
+
+/**
+ * A checkout someone is working in: a merge under way (MERGE_HEAD), or
+ * tracked files changed. The paths involved, or undefined when it is clean.
+ */
+export async function midMerge(cwd: string): Promise<string[] | undefined> {
+  const merging = await git(cwd, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]).then(
+    () => true,
+    () => false,
+  );
+  const changed = (await git(cwd, ["status", "--porcelain", "--untracked-files=no"]).catch(() => ""))
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => l.slice(3));
+  return merging || changed.length ? changed : undefined;
 }

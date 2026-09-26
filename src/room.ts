@@ -36,7 +36,7 @@ import type { PermissionDecider, PermissionRequestView, Seat, SeatConfig, SeatEv
 import { neutralizeLabels, renderDelta, Transcript, type Entry } from "./transcript.js";
 import { Activity } from "./activity.js";
 import { RoomMcp, type RoomTools } from "./server/mcp.js";
-import { recordRoom } from "./history.js";
+import { processStart, recordRoom } from "./history.js";
 import { harnessOf, readSkill, searchSkills, type McpServerEntry, type Skill } from "./discover.js";
 import { moderatorFor, type LimitCase, type Moderator, type Verdict } from "./moderator.js";
 
@@ -458,7 +458,7 @@ export class Room {
     if (this.state.auto) ui.status("auto: tool calls run without asking, except your deny and ask rules (/auto off)");
     recordRoom(this.opts.cwd, this.opts.name);
     // So prune (and the menu) know this room is open.
-    writeFileSync(join(this.stateDir, "pid"), String(process.pid));
+    writeFileSync(join(this.stateDir, "pid"), `${process.pid} ${processStart(process.pid) ?? ""}`.trim());
     if (this.transcript.entries.length === 0) {
       this.transcript.append(
         "room",
@@ -1231,6 +1231,10 @@ export class Room {
           ui.status(line);
           this.transcript.append("room", "commit", line);
           await this.noteAhead();
+        } else if (r.status === "busy") {
+          const line = `${name}'s work was not landed: the trunk is mid-merge (${fileList(r.files)}); it stays on ${desk.branch}, land it again once you finish there`;
+          ui.status(line);
+          this.transcript.append("room", "system", line);
         } else if (r.status === "conflict") {
           const line = `${name}'s work conflicts with ${trunk} in ${fileList(r.files)}; it stays on ${desk.branch} until ${name} merges ${trunk} into it`;
           ui.status(line);
@@ -1323,6 +1327,13 @@ export class Room {
     }
     await this.withTrunk(async () => {
       const r = await mergeRef(this.trunkDir, base.branch!, this.opts.human);
+      if (r.status === "busy") {
+        // You are resolving something in the trunk: leave it, and try again next turn.
+        if (base.conflict !== `busy:${tip}`) ui.status(`the trunk is mid-merge (${fileList(r.files)}); your ${base.branch} comes in once you finish there`);
+        base.conflict = `busy:${tip}`;
+        this.saveState();
+        return;
+      }
       if (r.status === "conflict") {
         // Said once per tip of your branch; retried quietly until it merges.
         if (base.conflict !== tip) {
@@ -1493,7 +1504,11 @@ export class Room {
       `mode ${this.state.mode}; untagged messages wake ${this.state.wake === "last" ? "whoever spoke last" : "everyone"}; ` +
         `seat-to-seat wakes per thread: ${cap === null ? "no limit" : cap}` +
         (this.useDesks ? `; trunk ${this.state.branch}` : "") +
-        (this.state.base?.conflict ? `\n${this.opts.human}'s ${this.state.base.branch} conflicts with the trunk and has not come in yet` : ""),
+        (this.state.base?.conflict
+          ? this.state.base.conflict.startsWith("busy:")
+            ? `\nthe trunk is mid-merge; ${this.opts.human}'s ${this.state.base.branch} comes in once they finish`
+            : `\n${this.opts.human}'s ${this.state.base.branch} conflicts with the trunk and has not come in yet`
+          : ""),
     ].join("\n");
   }
 

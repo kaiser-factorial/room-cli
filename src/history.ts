@@ -9,7 +9,7 @@
  * worktrees; the desk branches stay, so nothing a seat did is lost, and
  * resuming the room unpacks and recreates both.
  */
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, closeSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -180,17 +180,34 @@ export async function archiveRoom(cwd: string, name: string): Promise<{ saved: n
   return { saved, kept };
 }
 
-/** Whether a room is open right now (its process wrote a pid file and is alive). */
+/**
+ * Whether a room is open right now: its pid file names a live process that
+ * started when the room's did. The start time guards against a reused pid
+ * after a reboot, which would otherwise keep a dead room "open" forever.
+ */
 export function isRunning(cwd: string, name: string): boolean {
   const pidFile = join(cwd, ".room", name, "pid");
   if (!existsSync(pidFile)) return false;
-  const pid = Number(readFileSync(pidFile, "utf8"));
+  const [pidText, ...started] = readFileSync(pidFile, "utf8").trim().split(" ");
+  const pid = Number(pidText);
   if (!pid) return false;
   try {
     process.kill(pid, 0);
-    return true;
   } catch {
     return false;
+  }
+  const recorded = started.join(" ");
+  if (!recorded) return true;
+  const now = processStart(pid);
+  return now === undefined || now === recorded;
+}
+
+/** When a process started, as `ps` tells it (macOS and Linux), or undefined when it cannot say. */
+export function processStart(pid: number): string | undefined {
+  try {
+    return execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim().replace(/\s+/g, " ") || undefined;
+  } catch {
+    return undefined;
   }
 }
 

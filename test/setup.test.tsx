@@ -379,6 +379,44 @@ describe("the trunk and your branch, edge cases", () => {
     await room.stop();
   });
 
+  it("never aborts a merge you are resolving in the trunk: landing and your branch wait", async () => {
+    const { cwd, git, room, lines } = await deskRoom();
+    writeFileSync(join(room.trunkDir, "f.txt"), "trunk\n");
+    execFileSync("git", ["-c", "user.name=a", "-c", "user.email=a@a", "commit", "-qam", "trunk side"], { cwd: room.trunkDir });
+    writeFileSync(join(cwd, "f.txt"), "mine\n");
+    git("commit", "-qam", "mine");
+    await room.say("@a one");
+    // You start resolving in the trunk, as the room told you to.
+    try {
+      execFileSync("git", ["merge", "main"], { cwd: room.trunkDir, stdio: "ignore" });
+    } catch {
+      /* the conflict */
+    }
+    writeFileSync(join(room.trunkDir, "f.txt"), "resolved half-way\n");
+    // A seat lands, and your branch moves again, while you are at it.
+    writeFileSync(join(room.seatCwd("a"), "new.txt"), "x\n");
+    await room.land("a");
+    writeFileSync(join(cwd, "g.txt"), "more\n");
+    git("add", "g.txt");
+    git("commit", "-qm", "more");
+    await room.say("@a two");
+    // Your half-done resolution is still there, mid-merge.
+    expect(readFileSync(join(room.trunkDir, "f.txt"), "utf8")).toBe("resolved half-way\n");
+    expect(execFileSync("git", ["rev-parse", "-q", "--verify", "MERGE_HEAD"], { cwd: room.trunkDir, encoding: "utf8" }).trim()).not.toBe("");
+    expect(lines.some((l) => /^a's work was not landed: the trunk is mid-merge/.test(l))).toBe(true);
+    expect(lines.some((l) => /^the trunk is mid-merge \(.*\); your main comes in once you finish there$/.test(l))).toBe(true);
+    await room.stop();
+  });
+
+  it("a pid file whose process was reused (after a reboot) does not keep a room open", () => {
+    const cwd = tmp("pid");
+    mkdirSync(join(cwd, ".room", "x"), { recursive: true });
+    writeFileSync(join(cwd, ".room", "x", "pid"), `${process.pid} Mon Jan 1 00:00:00 2001`);
+    expect(isRunning(cwd, "x")).toBe(false);
+    writeFileSync(join(cwd, ".room", "x", "pid"), `${process.pid}`);
+    expect(isRunning(cwd, "x")).toBe(true);
+  });
+
   it("archive commits a seat's unfinished work before removing its desk, and does not count linked folders", async () => {
     const { cwd, git, room } = await deskRoom();
     const desk = room.seatCwd("a");
