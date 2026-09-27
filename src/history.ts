@@ -14,7 +14,7 @@ import { appendFileSync, existsSync, lstatSync, mkdirSync, openSync, readdirSync
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { gunzipSync, gzipSync } from "node:zlib";
-import { commitTurn, dirtyFiles } from "./git.js";
+import { commitTurn, dirtyFiles, MidMergeError } from "./git.js";
 import { configDir } from "./settings.js";
 import type { Entry } from "./transcript.js";
 
@@ -145,6 +145,7 @@ export function readTranscript(cwd: string, name: string): Entry[] {
  * brings it all back.
  */
 export async function archiveRoom(cwd: string, name: string): Promise<{ saved: number; kept: string[] }> {
+  if (isRunning(cwd, name)) throw new Error(`room ${name} is open; close it before archiving it`);
   const dir = join(cwd, ".room", name);
   const plain = join(dir, "transcript.jsonl");
   let saved = 0;
@@ -167,7 +168,15 @@ export async function archiveRoom(cwd: string, name: string): Promise<{ saved: n
       continue;
     }
     if (t.seat) {
-      await commitTurn(t.path, t.seat, `${t.seat}: uncommitted work, kept when the room was archived`).catch(() => undefined);
+      const conflicted = await commitTurn(t.path, t.seat, `${t.seat}: uncommitted work, kept when the room was archived`).then(
+        () => false,
+        (err: unknown) => err instanceof MidMergeError,
+      );
+      if (conflicted) {
+        // A merge half done in the desk: committing it would commit the markers.
+        kept.push(t.path);
+        continue;
+      }
     } else if ((await dirtyFiles(t.path)).length) {
       // The trunk mid-merge (you resolving a conflict): leave it for you.
       kept.push(t.path);
@@ -261,7 +270,16 @@ export async function pruneRooms(cwd: string, o: { names?: string[]; branches?: 
         report.kept.push(`${branch} (checked out)`);
         return;
       }
-      if (!o.dryRun) await git("branch", "-D", branch);
+      if (!o.dryRun) {
+        const err = await git("branch", "-D", branch).then(
+          () => undefined,
+          (e: unknown) => (e as { stderr?: string }).stderr?.trim().split("\n").pop() || String(e),
+        );
+        if (err) {
+          report.kept.push(`${branch} (${err})`);
+          return;
+        }
+      }
       report.deleted.push(branch);
     };
     for (const d of desks) await gone(d, trunk);

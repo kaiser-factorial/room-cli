@@ -128,6 +128,10 @@ describe("room MCP tools", () => {
     expect(list.body.result.tools.map((t: { name: string }) => t.name)).toEqual(["inbox", "post", "status", "show", "diff", "skills", "skill"]);
     expect((await rpc(url.replace(/[0-9a-f]+$/, "00"), { jsonrpc: "2.0", id: 3, method: "ping" })).status).toBe(404);
     expect(fakes.get("a")!.prompts.length).toBe(0);
+    // Junk bodies are answered, not fatal to the room's process.
+    expect((await rpc(url, null)).status).toBe(202);
+    expect((await rpc(url, [null, 1, "x"])).status).toBe(202);
+    expect((await rpc(url, { jsonrpc: "2.0", id: 4, method: "ping" })).body.result).toEqual({});
     await room.stop();
   });
 

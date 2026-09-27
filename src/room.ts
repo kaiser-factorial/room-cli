@@ -22,6 +22,7 @@ import {
   isAncestor,
   isRepo,
   linkIgnored,
+  MidMergeError,
   logRange,
   mergeRef,
   revParse,
@@ -48,6 +49,8 @@ export interface RoomUI {
   backgroundEvent?(seat: string, ev: SeatEvent): void;
   /** A turn answering alongside another one, so the two do not split each other. Without it: `seatEvent`. */
   sideEvent?(seat: string, ev: SeatEvent): void;
+  /** A turn answered alongside others is over, stopped or not: nothing of it may stay held. */
+  sideEnd?(seat: string): void;
   askHuman(req: PermissionRequestView): Promise<HumanChoice>;
   status(line: string): void;
   /** A seat posted mid-turn with the room's `post` tool. Without it: `status`. */
@@ -287,9 +290,10 @@ export class Room {
     this.state.mode ??= "sequential";
     if (opts.auto) this.state.auto = true;
     this.mod = opts.moderator;
-    if (opts.landCheck) this.state.landCheck ??= opts.landCheck;
+    // A resumed room keeps what was set in it, including a deliberate off (null).
+    if (opts.landCheck && this.state.landCheck === undefined) this.state.landCheck = opts.landCheck;
     if (opts.wake) this.state.wake ??= opts.wake;
-    if (opts.cap !== undefined) this.state.cap ??= opts.cap;
+    if (opts.cap !== undefined && this.state.cap === undefined) this.state.cap = opts.cap;
     for (const s of opts.seats) {
       const p = (this.state.policy[s.name] ??= emptyPolicy());
       for (const r of s.allow ?? []) if (!p.allow.includes(r)) p.allow.push(r);
@@ -756,6 +760,7 @@ export class Room {
       } catch (err) {
         this.opts.ui.status(`${seat}: ${(err as Error).message}`);
       } finally {
+        if (alongside) this.opts.ui.sideEnd?.(seat);
         order?.done();
         this.starting.delete(seat);
         t.answering.delete(seat);
@@ -1237,6 +1242,11 @@ export class Room {
         await commitTurn(desk.path, name, `${name}: turn ${entry.id}\n\n${text.trim().slice(0, 400)}`);
       } catch (err) {
         this.opts.ui.status(`${name}: could not commit its desk: ${(err as Error).message}`);
+        if (err instanceof MidMergeError) {
+          this.transcript.append("room", "system", `${name}'s work did not land: ${err.message}.`);
+          this.saveState();
+          return;
+        }
       }
       await this.mergeDesk(name);
     }
@@ -1297,19 +1307,27 @@ export class Room {
 
   /** Landings that found the trunk busy, tried again once it is free. */
   private async retryLands(): Promise<void> {
-    if (!this.pendingLands.size || (await midMerge(this.trunkDir))) return;
-    for (const name of [...this.pendingLands]) {
-      if (this.active.has(name)) continue;
-      await this.mergeDesk(name);
-    }
+    // One retry at a time: seats starting together must not land the same desk twice.
+    if (this.retrying) return this.retrying;
+    this.retrying = (async () => {
+      if (!this.pendingLands.size || (await midMerge(this.trunkDir))) return;
+      for (const name of [...this.pendingLands]) {
+        if (this.active.has(name) || !this.pendingLands.has(name)) continue;
+        await this.mergeDesk(name);
+      }
+    })().finally(() => (this.retrying = undefined));
+    return this.retrying;
   }
+  private retrying?: Promise<void>;
 
   /** The human's `/land`: commit what the seat left on its desk, as the seat, and merge it now. */
   async land(name: string, o: { force?: boolean } = {}): Promise<boolean> {
     const desk = this.state.desks?.[name];
     if (!desk) return false;
     if (this.active.has(name)) throw new Error(`${name} is mid-turn; land it after`);
-    await commitTurn(desk.path, name, `${name}: uncommitted work`).catch(() => undefined);
+    await commitTurn(desk.path, name, `${name}: uncommitted work`).catch((err: unknown) => {
+      if (err instanceof MidMergeError) throw new Error(`${name}'s desk: ${err.message}`);
+    });
     this.transcript.append("room", "system", `${this.opts.human} landed ${name}'s work${o.force ? " (skipping the check)" : ""}.`);
     await this.mergeDesk(name, o);
     this.saveState();
@@ -1338,6 +1356,12 @@ export class Room {
   private async openTrunk(): Promise<void> {
     const cwd = this.opts.cwd;
     const branch = `room/${this.opts.name}`;
+    const head = await revParse(cwd, "HEAD");
+    if (!head) {
+      throw new ConfigError(
+        `this repository has no commits yet, and desks branch from one. Make a first commit (git commit --allow-empty -m init) and open the room again, or use --no-desks.`,
+      );
+    }
     const current = await currentBranch(cwd);
     if (current === branch) {
       throw new ConfigError(
@@ -1345,7 +1369,7 @@ export class Room {
           `Check out your own branch (git checkout ${this.state.base?.branch ?? "<your branch>"}) and open the room again.`,
       );
     }
-    this.state.base ??= { branch: current === "HEAD" ? undefined : current, sha: (await revParse(cwd, "HEAD"))! };
+    this.state.base ??= { branch: current === "HEAD" ? undefined : current, sha: head };
     this.state.branch = branch;
     await ensureWorktree(cwd, this.trunkDir, branch, this.state.base.sha);
   }

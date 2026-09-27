@@ -98,7 +98,13 @@ export class RoomMcp {
   constructor(private readonly tools: RoomTools) {}
 
   async start(): Promise<void> {
-    this.server = createServer((req, res) => void this.handle(req, res));
+    this.server = createServer((req, res) =>
+      // Whatever a harness sends, the room's process must not go down with it.
+      void this.handle(req, res).catch(() => {
+        if (!res.headersSent) json(res, 500, { jsonrpc: "2.0", id: null, error: { code: -32603, message: "internal error" } });
+        else res.end();
+      }),
+    );
     await new Promise<void>((resolve, reject) => {
       this.server!.once("error", reject);
       this.server!.listen(0, "127.0.0.1", () => resolve());
@@ -148,7 +154,7 @@ export class RoomMcp {
 
   /** One JSON-RPC message; undefined for a notification or a response. */
   private async answer(seat: string, m: Rpc): Promise<object | undefined> {
-    if (m.id === undefined || m.id === null || !m.method) return undefined;
+    if (!m || typeof m !== "object" || m.id === undefined || m.id === null || !m.method) return undefined;
     const ok = (result: unknown) => ({ jsonrpc: "2.0", id: m.id, result });
     switch (m.method) {
       case "initialize":

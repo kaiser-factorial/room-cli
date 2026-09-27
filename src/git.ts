@@ -2,8 +2,8 @@
  * Commit-per-turn versioning. The room owns git; seats are told not to touch it.
  */
 import { execFile } from "node:child_process";
-import { existsSync, readdirSync, statSync, symlinkSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, statSync, symlinkSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
 const run = promisify(execFile);
@@ -42,6 +42,29 @@ export async function ensureRoomBranch(cwd: string, name: string): Promise<strin
   return branch;
 }
 
+/** A checkout with unresolved merge conflicts: committing would commit the markers. */
+export class MidMergeError extends Error {
+  constructor(readonly files: string[]) {
+    super(`a merge is under way with unresolved conflicts in ${files.join(", ")}; resolve them (or git merge --abort) first`);
+  }
+}
+
+/** Paths with unresolved conflicts. */
+export async function unmerged(cwd: string): Promise<string[]> {
+  return (await git(cwd, ["diff", "--name-only", "--diff-filter=U"]).catch(() => "")).split("\n").filter(Boolean);
+}
+
+/** A symlink to an absolute path outside the checkout: one of the room's desk links. */
+function isOutsideLink(cwd: string, rel: string): boolean {
+  try {
+    if (!lstatSync(join(cwd, rel)).isSymbolicLink()) return false;
+    const target = readlinkSync(join(cwd, rel));
+    return isAbsolute(target) && !resolve(target).startsWith(resolve(cwd) + sep);
+  } catch {
+    return false;
+  }
+}
+
 export interface TurnCommit {
   sha: string;
   /** e.g. "2 files changed, 14 insertions(+), 3 deletions(-)" */
@@ -59,7 +82,14 @@ export async function commitTurn(
   message: string,
   exclude: string[] = [".room"],
 ): Promise<TurnCommit | null> {
+  const conflicted = await unmerged(cwd);
+  if (conflicted.length) throw new MidMergeError(conflicted);
   await git(cwd, ["add", "-A", "--", ".", ...exclude.map((e) => `:!${e}`)]);
+  // A desk's links to the main checkout (node_modules, .venv) are never work:
+  // a `node_modules/` ignore pattern does not match a symlink, so unstage them.
+  const added = (await git(cwd, ["diff", "--cached", "--name-only", "--diff-filter=A"])).split("\n").filter(Boolean);
+  const links = added.filter((f) => isOutsideLink(cwd, f));
+  if (links.length) await git(cwd, ["rm", "--cached", "-q", "--", ...links]);
   const staged = await git(cwd, ["diff", "--cached", "--name-only"]);
   if (!staged) return null;
   await git(cwd, [
@@ -185,7 +215,25 @@ export async function linkIgnored(cwd: string, desk: string, patterns: string[] 
     symlinkSync(join(top, rel), at);
     linked.push(rel);
   }
+  if (linked.length) await excludeLinks(desk, linked);
   return linked;
+}
+
+/**
+ * Keep the links out of `git status` and a seat's own `git add -A`: an ignore
+ * pattern with a trailing slash (`node_modules/`) matches a folder, not a
+ * link to one. The exclude file is shared by the repo's worktrees; the
+ * entries name paths the main checkout already ignores, so it changes
+ * nothing there.
+ */
+async function excludeLinks(desk: string, rels: string[]): Promise<void> {
+  const file = resolve(desk, await git(desk, ["rev-parse", "--git-path", "info/exclude"]));
+  const have = existsSync(file) ? readFileSync(file, "utf8").split("\n") : [];
+  const add = rels.map((r) => `/${r.split(sep).join("/")}`).filter((l) => !have.includes(l));
+  if (!add.length) return;
+  mkdirSync(dirname(file), { recursive: true });
+  const lead = have.length && have[have.length - 1] !== "" ? "\n" : "";
+  appendFileSync(file, `${lead}# room: desk links to the main checkout\n${add.join("\n")}\n`);
 }
 
 function isDirSync(p: string): boolean {

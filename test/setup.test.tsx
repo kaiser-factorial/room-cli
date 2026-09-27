@@ -3,14 +3,14 @@
  * servers found in the harnesses' configs, past rooms and archiving.
  */
 import { execFileSync } from "node:child_process";
-import { readFileSync, symlinkSync } from "node:fs";
+import { lstatSync, readFileSync, symlinkSync } from "node:fs";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { render } from "ink-testing-library";
 import { afterEach, describe, expect, it } from "vitest";
 import { findMcpServers, findSkills, frontmatter, harnessOf, readSkill, searchSkills, type Skill } from "../src/discover.js";
-import { linkIgnored } from "../src/git.js";
+import { commitTurn, linkIgnored, MidMergeError } from "../src/git.js";
 import { archiveRoom, isRunning, listRooms, pruneRooms, readTranscript, recordRoom } from "../src/history.js";
 import { Room, type RoomUI } from "../src/room.js";
 import { applySecrets, loadSecrets, loadSettings, maskKey, saveOpenRouterKey, saveSettings } from "../src/settings.js";
@@ -550,6 +550,103 @@ describe("the trunk and your branch, edge cases", () => {
     expect(r.deleted).toEqual(["room/e"]);
     expect(git("branch", "--list", "desk/e/a")).toContain("desk/e/a");
     expect(existsSync(room.seatCwd("a"))).toBe(false);
+  });
+
+  it("desk links are never committed, even with a trailing-slash ignore pattern", async () => {
+    const cwd = tmp("links");
+    const git = (...a: string[]) => execFileSync("git", ["-c", "user.name=h", "-c", "user.email=h@h", ...a], { cwd, encoding: "utf8" }).trim();
+    git("init", "-q", "-b", "main");
+    writeFileSync(join(cwd, ".gitignore"), "node_modules/\n");
+    mkdirSync(join(cwd, "node_modules", "dep"), { recursive: true });
+    git("add", ".gitignore");
+    git("commit", "-q", "-m", "seed");
+    const room = await Room.open({
+      name: "l",
+      cwd,
+      seats: [{ name: "a", adapter: "acp", command: "x" }],
+      human: "Corina",
+      ui: { seatEvent() {}, askHuman: async () => "deny", status() {} },
+      tools: false,
+      makeSeat: (c) => new ToolSeat(c) as never,
+    });
+    await room.start();
+    const desk = room.seatCwd("a");
+    expect(lstatSync(join(desk, "node_modules")).isSymbolicLink()).toBe(true);
+    // Invisible to a seat's own git, and dropped by the room's commit even if staged.
+    expect(execFileSync("git", ["status", "--porcelain"], { cwd: desk, encoding: "utf8" })).toBe("");
+    writeFileSync(join(desk, "work.txt"), "w\n");
+    await commitTurn(desk, "a", "a: work");
+    expect(git("show", "--name-only", "--format=", "desk/l/a")).toBe("work.txt");
+    await room.stop();
+  });
+
+  it("a desk mid-merge with conflicts is not committed, landed, or archived away", async () => {
+    const { cwd, git, room } = await deskRoom();
+    const desk = room.seatCwd("a");
+    const dgit = (...a: string[]) => execFileSync("git", ["-c", "user.name=a", "-c", "user.email=a@a", ...a], { cwd: desk, encoding: "utf8" });
+    writeFileSync(join(desk, "f.txt"), "from a\n");
+    dgit("commit", "-qam", "a");
+    writeFileSync(join(room.trunkDir, "f.txt"), "from trunk\n");
+    execFileSync("git", ["-c", "user.name=h", "-c", "user.email=h@h", "commit", "-qam", "t"], { cwd: room.trunkDir });
+    expect(() => dgit("merge", "-q", "room/e")).toThrow();
+    await expect(commitTurn(desk, "a", "x")).rejects.toBeInstanceOf(MidMergeError);
+    await expect(room.land("a", { force: true })).rejects.toThrow(/unresolved conflicts in f.txt/);
+    expect(git("show", "room/e:f.txt")).toBe("from trunk");
+    await room.stop();
+    const { kept } = await archiveRoom(cwd, "e");
+    expect(kept).toContain(desk);
+    expect(existsSync(join(desk, "f.txt"))).toBe(true);
+  });
+
+  it("archive refuses an open room; prune keeps a branch it cannot delete instead of failing", async () => {
+    const { cwd, room } = await deskRoom();
+    await expect(archiveRoom(cwd, "e")).rejects.toThrow(/is open/);
+    writeFileSync(join(room.trunkDir, "f.txt"), "yours, unsaved\n");
+    await room.stop();
+    const [r] = await pruneRooms(cwd, { branches: true });
+    expect(r.deleted).toEqual(["desk/e/a"]);
+    expect(r.kept.some((k) => k.startsWith("room/e ("))).toBe(true);
+  });
+
+  it("a room set to no cap or no check keeps it on resume, whatever the defaults say", async () => {
+    const cwd = tmp("cap");
+    const open = () =>
+      Room.open({
+        name: "c",
+        cwd,
+        seats: [{ name: "a", adapter: "acp", command: "x" }],
+        human: "Corina",
+        ui: { seatEvent() {}, askHuman: async () => "deny", status() {} },
+        git: false,
+        tools: false,
+        cap: 6,
+        landCheck: "true",
+        makeSeat: (c) => new ToolSeat(c) as never,
+      });
+    const first = await open();
+    first.setCap(null);
+    first.setLandCheck(null);
+    await first.stop();
+    const again = await open();
+    expect(again.cap).toBeNull();
+    expect(JSON.parse(readFileSync(join(cwd, ".room", "c", "state.json"), "utf8")).landCheck).toBeNull();
+    await again.stop();
+  });
+
+  it("a repository with no commits gets a clear error, not a crash", async () => {
+    const cwd = tmp("empty");
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd });
+    await expect(
+      Room.open({
+        name: "z",
+        cwd,
+        seats: [{ name: "a", adapter: "acp", command: "x" }],
+        human: "Corina",
+        ui: { seatEvent() {}, askHuman: async () => "deny", status() {} },
+        tools: false,
+        makeSeat: (c) => new ToolSeat(c) as never,
+      }).then((r) => r.start()),
+    ).rejects.toThrow(/no commits yet/);
   });
 });
 

@@ -225,7 +225,8 @@ async function runRoom(name: string, lineupSeats: SeatConfig[], opts: StartOptio
     desks: opts.desks,
     auto: opts.auto,
     wake: wakeOpt(opts.wake) ?? saved.wake,
-    cap: capOpt(opts.cap) ?? (saved.cap === "off" ? null : saved.cap),
+    // `--cap off` is null, a choice, not "unset": only a missing flag falls back to settings.
+    cap: opts.cap !== undefined ? capOpt(opts.cap) : saved.cap === "off" ? null : saved.cap,
     mode: opts.parallel ? ("parallel" as const) : undefined,
     turnTimeoutMs: Number(opts.turnTimeout) * 1000,
     skills: saved.shareSkills === false ? [] : findSkills({ cwd }),
@@ -379,7 +380,7 @@ roomOptions(
 program
   .command("acp [seats...]")
   .description("Serve the room as an ACP agent on stdio, for an editor (Zed, VS Code); each editor session is a room")
-  .option("--human <name>", "your name in the transcript", "Corina")
+  .option("--human <name>", "your name in the transcript (default: the menu's, else Corina)")
   .option("--room-file <file>", "TOML with seats, modes, roles, and policy")
   .option("--no-git", "do not branch or commit per turn")
   .option("--no-desks", "seats share one working directory instead of a worktree each")
@@ -405,8 +406,8 @@ program
       git: opts.git ? undefined : false,
       desks: opts.desks,
       auto: opts.auto,
-      wake: wakeOpt(opts.wake),
-      cap: capOpt(opts.cap),
+      wake: wakeOpt(opts.wake) ?? saved.wake,
+      cap: opts.cap !== undefined ? capOpt(opts.cap) : saved.cap === "off" ? null : saved.cap,
       mode: opts.parallel ? "parallel" : undefined,
       turnTimeoutMs: Number(opts.turnTimeout) * 1000,
       log: (line) => console.error(`room: ${line}`),

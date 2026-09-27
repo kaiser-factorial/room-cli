@@ -290,7 +290,7 @@ export function Menu({ ctx, onDone }: { ctx: MenuContext; onDone: (r: MenuResult
             setRooms(fresh);
             setPicked(fresh.find((r) => r.cwd === picked.cwd && r.name === picked.name));
             setNote(`Archived; freed ${humanBytes(saved)}. Resume unpacks it.`);
-          }),
+          }, (err: Error) => setNote(`Not archived: ${err.message}`)),
       },
       { label: "Back", enter: () => go("rooms") },
     ];

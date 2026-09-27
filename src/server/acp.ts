@@ -410,6 +410,15 @@ export class AcpServerUI implements RoomUI {
     this.seatEvent(seat, ev);
   }
 
+  /** A turn that failed or timed out never sends "stop": show what it said, not with its next reply. */
+  sideEnd(seat: string): void {
+    const held = this.sideText.get(seat);
+    if (held === undefined) return;
+    this.sideText.delete(seat);
+    if (held) this.seatEvent(seat, { type: "text", text: held });
+    this.speaker = undefined;
+  }
+
   /** A seat's mid-turn `post`: its own paragraph. */
   posted(seat: string, text: string): void {
     this.paragraph();
