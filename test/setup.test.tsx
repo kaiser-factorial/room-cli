@@ -798,3 +798,26 @@ describe("the menu", () => {
     r.unmount();
   });
 });
+
+describe("discovery across more harnesses", () => {
+  it("reads Cursor, Zed, Poolside, and Hermes servers, and Pi skills", () => {
+    const home = tmp("more-home");
+    const cwd = tmp("more-cwd");
+    const put = (p: string, text: string) => {
+      mkdirSync(join(p, ".."), { recursive: true });
+      writeFileSync(p, text);
+    };
+    put(join(cwd, ".cursor", "mcp.json"), JSON.stringify({ mcpServers: { linear: { command: "npx", args: ["linear"] } } }));
+    put(join(cwd, ".zed", "settings.json"), JSON.stringify({ context_servers: { docs: { command: "docs-mcp" } } }));
+    put(join(cwd, ".poolside", "settings.local.yaml"), "mcp_servers:\n  pg:\n    command: pg-mcp\n    args:\n      - --ro\n  room:\n    command: x\n");
+    put(join(home, ".hermes", "config.yaml"), "mcp_servers:\n  web:\n    url: https://example.test/mcp\n");
+    put(join(home, ".pi", "agent", "skills", "tidy", "SKILL.md"), "---\nname: tidy\ndescription: tidy up\n---\n");
+    const servers = findMcpServers({ home, cwd }).map((m) => `${m.harness}:${m.name}`);
+    expect(servers).toEqual(expect.arrayContaining(["cursor:linear", "zed:docs", "pool:pg", "hermes:web"]));
+    expect(servers).not.toContain("pool:room");
+    expect(findMcpServers({ home, cwd }).find((m) => m.name === "pg")!.args).toEqual(["--ro"]);
+    expect(findSkills({ home, cwd }).find((k) => k.name === "tidy")!.harness).toBe("pi");
+    expect(harnessOf("pi")).toBe("pi");
+    expect(harnessOf("pipx run x")).not.toBe("pi");
+  });
+});

@@ -7,11 +7,12 @@ import { existsSync, readdirSync, readFileSync, statSync, type Dirent } from "no
 import { homedir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { parse } from "smol-toml";
+import { parse as parseYaml } from "yaml";
 
 export interface Skill {
   name: string;
   description: string;
-  /** Which harness's config it came from: claude, codex, gemini, hermes, or shared. */
+  /** Which harness's config it came from: claude, codex, grok, gemini, antigravity, hermes, pi, or shared. */
   harness: string;
   /** The folder holding its SKILL.md (for a command, the folder holding it). */
   dir: string;
@@ -55,6 +56,8 @@ export function findSkills(o: Where = {}): Skill[] {
     ["antigravity", join(home, ".gemini", "config"), 5],
     ["antigravity", join(cwd, ".agents", "plugins"), 4],
     ["hermes", join(home, ".hermes", "skills"), 3],
+    ["pi", join(home, ".pi", "agent", "skills"), 2],
+    ["pi", join(cwd, ".pi", "skills"), 2],
     ["shared", join(cwd, ".agents", "skills"), 2],
     ["shared", join(home, ".agents", "skills"), 2],
     ["shared", join(home, ".config", "room", "skills"), 2],
@@ -139,7 +142,7 @@ export function frontmatter(text: string): { name?: string; description?: string
   return { name: get("name"), description: get("description") };
 }
 
-/** MCP servers configured for Claude Code, Codex, Grok, and Gemini/agy. */
+/** MCP servers configured for Claude Code, Codex, Grok, Gemini, Antigravity, Cursor, Zed, Poolside, and Hermes. (Pi has no MCP of its own.) */
 export function findMcpServers(o: Where = {}): McpServerEntry[] {
   const home = o.home ?? homedir();
   const cwd = o.cwd ?? process.cwd();
@@ -173,6 +176,26 @@ export function findMcpServers(o: Where = {}): McpServerEntry[] {
       /* a config the harness itself would reject */
     }
   };
+  // Cursor, Zed (which calls them context servers), Poolside and Hermes (YAML).
+  fromJson("cursor", join(home, ".cursor", "mcp.json"), (d) => [d.mcpServers]);
+  fromJson("cursor", join(cwd, ".cursor", "mcp.json"), (d) => [d.mcpServers]);
+  fromJson("zed", join(home, ".config", "zed", "settings.json"), (d) => [d.context_servers]);
+  fromJson("zed", join(cwd, ".zed", "settings.json"), (d) => [d.context_servers]);
+  const fromYaml = (harness: string, path: string, key: string) => {
+    if (!existsSync(path)) return;
+    try {
+      const doc = parseYaml(readFileSync(path, "utf8")) as Record<string, unknown> | null;
+      const table = doc?.[key];
+      if (!table || typeof table !== "object") return;
+      for (const [name, v] of Object.entries(table as Record<string, Record<string, unknown>>)) if (name !== "room" && v && typeof v === "object") out.push(entry(name, harness, path, v));
+    } catch {
+      /* a config the harness itself would reject */
+    }
+  };
+  fromYaml("pool", join(home, ".config", "poolside", "settings.yaml"), "mcp_servers");
+  fromYaml("pool", join(cwd, ".poolside", "settings.yaml"), "mcp_servers");
+  fromYaml("pool", join(cwd, ".poolside", "settings.local.yaml"), "mcp_servers");
+  fromYaml("hermes", join(home, ".hermes", "config.yaml"), "mcp_servers");
   fromToml("codex", join(home, ".codex", "config.toml"));
   fromToml("grok", join(process.env.GROK_HOME && !o.home ? process.env.GROK_HOME : join(home, ".grok"), "config.toml"));
   fromToml("grok", join(cwd, ".grok", "config.toml"));
@@ -204,6 +227,8 @@ export function harnessOf(command: string): string {
   if (c.includes("gemini")) return "gemini";
   if (c.includes("hermes")) return "hermes";
   if (c.includes("grok")) return "grok";
+  if (c.includes("pool")) return "pool";
+  if (/(^|\/)pi$/.test(c) || c.includes("pi-coding-agent")) return "pi";
   return c;
 }
 

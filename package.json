@@ -32,7 +32,8 @@
     "ink": "^7.1.1",
     "ink-text-input": "^6.0.0",
     "react": "^19.3.0",
-    "smol-toml": "^1.4.0"
+    "smol-toml": "^1.4.0",
+    "yaml": "^2.9.1"
   },
   "optionalDependencies": {
     "antigravity-acp": "^1.1.0"
