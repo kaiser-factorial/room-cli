@@ -4,7 +4,7 @@
  * file is backed up before it is changed, and nothing else in it is touched.
  */
 import { execFile } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -97,11 +97,13 @@ export function withRoomTable(toml: string, command: string[]): string {
 
 /**
  * `room setup grok`: the server as a table in GROK_HOME/config.toml (user
- * config needs no folder trust), and the ping hooks as GROK_HOME/hooks/room.json.
- * Grok runs hooks on the same events as Claude; whether it acts on their
- * output is not confirmed, so ROOM_HOOK_LOG is there to check.
+ * config needs no folder trust), and the ping hooks as GROK_HOME/hooks/room.json:
+ * Grok's hooks are Claude's (PostToolUse additionalContext reaches the model;
+ * Stop's decision: block holds the turn; stdin is camelCase). Grok also runs
+ * ~/.claude/settings.json hooks, so when room setup claude put them there,
+ * no second copy is written.
  */
-export async function setupGrok(o: { grokHome?: string; dryRun?: boolean; log?: (l: string) => void } = {}): Promise<void> {
+export async function setupGrok(o: { grokHome?: string; claudeHome?: string; dryRun?: boolean; log?: (l: string) => void } = {}): Promise<void> {
   const log = o.log ?? ((l: string) => console.log(l));
   const home = o.grokHome ?? process.env.GROK_HOME ?? join(homedir(), ".grok");
   const { mcp, hook } = entryPoints();
@@ -109,7 +111,12 @@ export async function setupGrok(o: { grokHome?: string; dryRun?: boolean; log?: 
   const current = existsSync(config) ? readFileSync(config, "utf8") : "";
   const next = withRoomTable(current, mcp);
   const hooksFile = join(home, "hooks", "room.json");
-  const hooks = { hooks: withRoomHooks({}, hook).hooks };
+  // Grok never adds UserPromptSubmit output to context, so only the two that work.
+  const all = withRoomHooks({}, hook).hooks as Record<string, unknown>;
+  const hooks = { hooks: { PostToolUse: all.PostToolUse, Stop: all.Stop } };
+  // Grok also runs the hooks in ~/.claude/settings.json (by default): if room setup claude put them there, a second copy only doubles the work.
+  const claudeSettings = join(o.claudeHome ?? homedir(), ".claude", "settings.json");
+  const viaClaude = existsSync(claudeSettings) && /hub[/\\]hook\.js/.test(readFileSync(claudeSettings, "utf8"));
   if (o.dryRun) {
     log(`would write to ${config}:\n${next}`);
     log(`would write ${hooksFile}:\n${JSON.stringify(hooks, null, 2)}`);
@@ -118,12 +125,16 @@ export async function setupGrok(o: { grokHome?: string; dryRun?: boolean; log?: 
   mkdirSync(join(home, "hooks"), { recursive: true });
   if (existsSync(config)) copyFileSync(config, `${config}.room-backup`);
   writeFileSync(config, next);
-  writeFileSync(hooksFile, JSON.stringify(hooks, null, 2) + "\n");
   log(`added [mcp_servers.room] to ${config}${existsSync(`${config}.room-backup`) ? ` (backup: ${config}.room-backup)` : ""}`);
-  log(`wrote the room's hooks to ${hooksFile}`);
+  if (viaClaude) {
+    rmSync(hooksFile, { force: true });
+    log(`hooks: Grok already runs the room's hooks from ${claudeSettings} (Claude compatibility), so none were added (to use Grok's own, set [compat.claude] hooks = false and run this again)`);
+  } else {
+    writeFileSync(hooksFile, JSON.stringify(hooks, null, 2) + "\n");
+    log(`wrote the room's hooks to ${hooksFile}`);
+  }
   writeSkill(join(home, "skills", "room"), log);
   log("Restart Grok sessions to pick them up; `grok inspect` should list both.");
-  log("Not yet confirmed: that Grok acts on a hook's output. To check, start grok with ROOM_HOOK_LOG=/tmp/room-hook.log, join a room, have someone post, and see whether a note reaches it.");
 }
 
 /** The room skill every harness can load: what the room is and how to behave in it. */

@@ -186,11 +186,20 @@ describe("setup for grok", () => {
     const env = scratchEnv();
     const home = join(env.ROOM_CONFIG_DIR!, "grok-home");
     const lines: string[] = [];
-    await setupGrok({ grokHome: home, log: (l) => lines.push(l) });
-    const { readFileSync } = await import("node:fs");
+    const claudeHome = join(env.ROOM_CONFIG_DIR!, "claude-home");
+    await setupGrok({ grokHome: home, claudeHome, log: (l) => lines.push(l) });
+    const { readFileSync, existsSync, mkdirSync, writeFileSync } = await import("node:fs");
     expect(readFileSync(join(home, "config.toml"), "utf8")).toContain("[mcp_servers.room]");
     const hooks = JSON.parse(readFileSync(join(home, "hooks", "room.json"), "utf8"));
-    expect(Object.keys(hooks.hooks)).toEqual(["PostToolUse", "UserPromptSubmit", "Stop"]);
+    // Grok drops UserPromptSubmit context, so only the two that reach the model.
+    expect(Object.keys(hooks.hooks)).toEqual(["PostToolUse", "Stop"]);
+    // With the hooks already in ~/.claude/settings.json (which Grok also runs), no second copy.
+    mkdirSync(join(claudeHome, ".claude"), { recursive: true });
+    writeFileSync(join(claudeHome, ".claude", "settings.json"), JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: "command", command: "node /x/dist/src/hub/hook.js stop" }] }] } }));
+    lines.length = 0;
+    await setupGrok({ grokHome: home, claudeHome, log: (l) => lines.push(l) });
+    expect(existsSync(join(home, "hooks", "room.json"))).toBe(false);
+    expect(lines.some((l) => l.includes("Grok already runs the room's hooks"))).toBe(true);
     const { findMcpServers } = await import("../src/discover.js");
     // The room's own server is never offered for sharing.
     expect(findMcpServers({ home: join(env.ROOM_CONFIG_DIR!, "nohome"), cwd: env.ROOM_CONFIG_DIR! }).some((m) => m.name === "room")).toBe(false);

@@ -566,11 +566,13 @@ really cannot go on without one. An idle session cannot be woken from
 outside: nudge it yourself.
 
 Grok: `room setup grok` adds `[mcp_servers.room]` to `$GROK_HOME/config.toml`
-(user config, so no folder trust needed) and the same hooks as
-`$GROK_HOME/hooks/room.json`. Grok names the tools `room__inbox` and reaches
-them with `use_tool`. Grok runs hooks on the same events as Claude; whether
-it acts on their output is not confirmed yet: start grok with
-`ROOM_HOOK_LOG=/tmp/room-hook.log` to see each run. Antigravity: `room setup antigravity` writes one plugin,
+(user config, so no folder trust needed) and the ping hooks
+(PostToolUse, Stop) as `$GROK_HOME/hooks/room.json`. Grok's hooks take
+Claude's output, so the note and the held turn work the same. Grok also runs
+the hooks in `~/.claude/settings.json` and loads servers from
+`~/.claude.json`, so after `room setup claude` it needs no hooks file of its
+own, and setup skips it. Grok names the tools `room__inbox` and reaches them
+with `use_tool`. Antigravity: `room setup antigravity` writes one plugin,
 `~/.gemini/config/plugins/room/`: the server (`mcp_config.json`), a
 `PreInvocation` hook that adds the note before each model call and a `Stop`
 hook (`hooks.json`), and the room skill. Their output shape is not
