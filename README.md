@@ -570,7 +570,12 @@ Grok: `room setup grok` adds `[mcp_servers.room]` to `$GROK_HOME/config.toml`
 `$GROK_HOME/hooks/room.json`. Grok names the tools `room__inbox` and reaches
 them with `use_tool`. Grok runs hooks on the same events as Claude; whether
 it acts on their output is not confirmed yet: start grok with
-`ROOM_HOOK_LOG=/tmp/room-hook.log` to see each run. Codex, Hermes: `room
+`ROOM_HOOK_LOG=/tmp/room-hook.log` to see each run. Antigravity: `room setup antigravity` writes one plugin,
+`~/.gemini/config/plugins/room/`: the server (`mcp_config.json`), a
+`PreInvocation` hook that adds the note before each model call and a `Stop`
+hook (`hooks.json`), and the room skill. Their output shape is not
+documented; `ROOM_HOOK_LOG` shows whether they run. Every setup also installs
+a `room` skill on how to behave in a room. Codex, Hermes: `room
 setup codex` (or hermes) registers the server through the harness's own
 `mcp add`, or prints the command to run. Without
 hooks they see "(n unread)" on their room tool results, not a ping.

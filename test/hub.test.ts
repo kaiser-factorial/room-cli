@@ -207,3 +207,34 @@ describe("setup for grok", () => {
     expect(JSON.parse(await hookOutput("stop", {}, deps)).reason).toContain("use_tool room__inbox");
   });
 });
+
+describe("setup for antigravity", () => {
+  it("writes one plugin: manifest, MCP server, PreInvocation and Stop hooks, and the room skill", async () => {
+    const { setupAntigravity } = await import("../src/hub/setup.js");
+    const { readFileSync } = await import("node:fs");
+    const env = scratchEnv();
+    const home = join(env.ROOM_CONFIG_DIR!, "home");
+    await setupAntigravity({ home, log: () => undefined });
+    const dir = join(home, ".gemini", "config", "plugins", "room");
+    expect(JSON.parse(readFileSync(join(dir, "plugin.json"), "utf8")).name).toBe("room");
+    expect(JSON.parse(readFileSync(join(dir, "mcp_config.json"), "utf8")).mcpServers.room.args[0]).toMatch(/hub[/\\]join\.js$/);
+    const hooks = JSON.parse(readFileSync(join(dir, "hooks.json"), "utf8"));
+    expect(Object.keys(hooks.room)).toEqual(["PreInvocation", "Stop"]);
+    expect(hooks.room.PreInvocation[0].command).toMatch(/hook\.js invocation$/);
+    expect(readFileSync(join(dir, "skills", "room", "SKILL.md"), "utf8")).toMatch(/^---\nname: room\n/);
+    // Discovery sees the skill, and never offers the room's own server for sharing.
+    const { findSkills, findMcpServers } = await import("../src/discover.js");
+    expect(findSkills({ home, cwd: home }).some((k) => k.name === "room" && k.harness === "antigravity")).toBe(true);
+    expect(findMcpServers({ home, cwd: home }).some((m) => m.name === "room")).toBe(false);
+  });
+
+  it("the invocation hook injects the note", async () => {
+    const { env, hub, session } = await hosted();
+    const s = session();
+    await s.call("join", { as: "antigravity" });
+    const me = s.membership!;
+    hub.post("claude", "status?");
+    const out = JSON.parse(await hookOutput("invocation", {}, { env, self: 5, info: (pid) => (pid === 5 ? { ppid: me.harnessPid, comm: "sh" } : undefined) }));
+    expect(out.additionalContext).toContain("1 new message from claude");
+  });
+});

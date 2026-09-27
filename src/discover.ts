@@ -52,6 +52,8 @@ export function findSkills(o: Where = {}): Skill[] {
     ["codex", join(home, ".codex", "plugins"), 8],
     ["grok", join(home, ".grok"), 6],
     ["gemini", join(home, ".gemini", "skills"), 2],
+    ["antigravity", join(home, ".gemini", "config"), 5],
+    ["antigravity", join(cwd, ".agents", "plugins"), 4],
     ["hermes", join(home, ".hermes", "skills"), 3],
     ["shared", join(cwd, ".agents", "skills"), 2],
     ["shared", join(home, ".agents", "skills"), 2],
@@ -154,6 +156,13 @@ export function findMcpServers(o: Where = {}): McpServerEntry[] {
   fromJson("claude", claudeJson, (d) => [d.mcpServers, (d.projects as Record<string, { mcpServers?: unknown }> | undefined)?.[cwd]?.mcpServers]);
   fromJson("claude", join(cwd, ".mcp.json"), (d) => [d.mcpServers]);
   fromJson("gemini", join(home, ".gemini", "settings.json"), (d) => [d.mcpServers]);
+  // Antigravity: a global mcp_config.json, and one per plugin (the room's own plugin aside).
+  const agy = join(home, ".gemini", "config");
+  fromJson("antigravity", join(agy, "mcp_config.json"), (d) => [d.mcpServers]);
+  for (const root of [join(agy, "plugins"), join(cwd, ".agents", "plugins")]) {
+    if (!isDir(root)) continue;
+    for (const p of safeList(root)) if (p !== "room") fromJson("antigravity", join(root, p, "mcp_config.json"), (d) => [d.mcpServers]);
+  }
   const fromToml = (harness: string, path: string) => {
     if (!existsSync(path)) return;
     try {
@@ -173,7 +182,7 @@ export function findMcpServers(o: Where = {}): McpServerEntry[] {
 function entry(name: string, harness: string, source: string, v: Record<string, unknown>): McpServerEntry {
   const strs = (x: unknown) => (Array.isArray(x) ? x.map(String) : undefined);
   const env = v.env && typeof v.env === "object" ? Object.fromEntries(Object.entries(v.env as object).map(([k, x]) => [k, String(x)])) : undefined;
-  const url = typeof v.url === "string" ? v.url : typeof v.httpUrl === "string" ? v.httpUrl : undefined;
+  const url = typeof v.url === "string" ? v.url : typeof v.httpUrl === "string" ? v.httpUrl : typeof v.serverUrl === "string" ? v.serverUrl : undefined;
   return { name, harness, source, command: typeof v.command === "string" ? v.command : undefined, args: strs(v.args), env, url };
 }
 
@@ -191,7 +200,8 @@ export function harnessOf(command: string): string {
   const c = command.toLowerCase();
   if (c.includes("claude")) return "claude";
   if (c.includes("codex")) return "codex";
-  if (c.includes("gemini") || c.includes("antigravity") || c.includes("agy")) return "gemini";
+  if (c.includes("antigravity") || c.includes("agy")) return "antigravity";
+  if (c.includes("gemini")) return "gemini";
   if (c.includes("hermes")) return "hermes";
   if (c.includes("grok")) return "grok";
   return c;

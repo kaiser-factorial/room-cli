@@ -13,7 +13,8 @@ import { appendFileSync, readFileSync } from "node:fs";
 import { ancestors, callHub, memberships, procInfo, saveMembership, type Membership, type ProcInfo } from "./client.js";
 import type { Peek } from "./hub.js";
 
-export type HookEvent = "post-tool" | "prompt" | "stop";
+/** post-tool, prompt, stop: Claude's and Grok's events. invocation: Antigravity's PreInvocation, before each model call. */
+export type HookEvent = "post-tool" | "prompt" | "stop" | "invocation";
 
 /** What a hook gets on stdin: Claude's snake_case fields, and Grok's camelCase ones beside them. */
 export interface HookInput {
@@ -50,7 +51,7 @@ export async function hookOutput(event: HookEvent, input: HookInput, o: HookDeps
   const note =
     `[room ${m.room}] ${peek.unread} new message${peek.unread === 1 ? "" : "s"} from ${who}` +
     `${peek.addressed ? ` (${peek.addressed} tagging you, @${m.name})` : ""}. Latest: ${peek.preview}. ` +
-    `Read them with the room inbox tool (mcp__room__inbox; on Grok, use_tool room__inbox) when you reach a good stopping point; no need to drop what you are doing.`;
+    `Read them with the room inbox tool (mcp__room__inbox; on Grok, use_tool room__inbox; elsewhere, the room server's inbox) when you reach a good stopping point; no need to drop what you are doing.`;
   if (event === "stop") {
     // Only for a message that asks this session something, once per message, and never twice in a row.
     if (!peek.addressed || input.stop_hook_active || input.stopHookActive || (m.held ?? 0) >= peek.lastId) return "";
@@ -62,13 +63,15 @@ export async function hookOutput(event: HookEvent, input: HookInput, o: HookDeps
   }
   if ((m.pinged ?? 0) >= peek.lastId) return "";
   saveMembership({ ...m, pinged: peek.lastId }, o.env);
+  // Antigravity's PreInvocation injects context; its output shape is not documented, so both common names.
+  if (event === "invocation") return JSON.stringify({ additionalContext: note, context: note });
   const hookEventName = event === "prompt" ? "UserPromptSubmit" : "PostToolUse";
   return JSON.stringify({ hookSpecificOutput: { hookEventName, additionalContext: note } });
 }
 
 export async function runHook(event: string): Promise<void> {
-  if (event !== "post-tool" && event !== "prompt" && event !== "stop") {
-    process.stderr.write("usage: room hook post-tool|prompt|stop\n");
+  if (event !== "post-tool" && event !== "prompt" && event !== "stop" && event !== "invocation") {
+    process.stderr.write("usage: room hook post-tool|prompt|stop|invocation\n");
     process.exitCode = 0;
     return;
   }

@@ -123,7 +123,7 @@ describe("discovery", () => {
     expect(frontmatter("---\nname: x\ndescription: 'y z'\n---\nbody")).toEqual({ name: "x", description: "y z" });
     expect(frontmatter("no front matter")).toEqual({});
     expect(harnessOf("claude-agent-acp")).toBe("claude");
-    expect(harnessOf("antigravity-acp")).toBe("gemini");
+    expect(harnessOf("antigravity-acp")).toBe("antigravity");
   });
 });
 

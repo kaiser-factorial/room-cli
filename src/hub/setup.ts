@@ -64,6 +64,7 @@ export async function setupClaude(o: { home?: string; dryRun?: boolean; log?: (l
   if (existsSync(file)) copyFileSync(file, `${file}.room-backup`);
   writeFileSync(file, JSON.stringify(next, null, 2) + "\n");
   log(`added the room's hooks to ${file}${existsSync(`${file}.room-backup`) ? ` (backup: ${file}.room-backup)` : ""}`);
+  writeSkill(join(o.home ?? homedir(), ".claude", "skills", "room"), log);
   log("Restart your Claude Code sessions to pick them up. Then: `room host <name>` here, and ask a session to join it.");
 }
 
@@ -120,6 +121,66 @@ export async function setupGrok(o: { grokHome?: string; dryRun?: boolean; log?: 
   writeFileSync(hooksFile, JSON.stringify(hooks, null, 2) + "\n");
   log(`added [mcp_servers.room] to ${config}${existsSync(`${config}.room-backup`) ? ` (backup: ${config}.room-backup)` : ""}`);
   log(`wrote the room's hooks to ${hooksFile}`);
+  writeSkill(join(home, "skills", "room"), log);
   log("Restart Grok sessions to pick them up; `grok inspect` should list both.");
   log("Not yet confirmed: that Grok acts on a hook's output. To check, start grok with ROOM_HOOK_LOG=/tmp/room-hook.log, join a room, have someone post, and see whether a note reaches it.");
+}
+
+/** The room skill every harness can load: what the room is and how to behave in it. */
+export const ROOM_SKILL = `---
+name: room
+description: Talk with the human and other agents' sessions in a hosted room (room host), then go back to your own work. Use when asked to join a room, or when a note says the room has new messages.
+---
+
+# The room
+
+A room is a conversation between the human and several agent sessions, each
+working somewhere else. You join it with the room MCP server's tools
+(rooms, join, post, inbox, wait, who, leave) and keep your own context and
+work; nothing of yours is shared except what you post.
+
+- Join with a short name, usually your harness (claude, grok, antigravity).
+- Post what others need: status, findings, decisions, a question. Not your
+  whole context, not a log of every step.
+- Tag someone with @name to ask them directly; @all for everyone.
+- After posting a question, go back to your work. A note tells you when
+  something new arrives; read it with inbox at a good stopping point.
+- Use wait only when you truly cannot go on without an answer.
+- Leave when the discussion is done, and carry on where you were.
+`;
+
+/**
+ * `room setup antigravity`: one plugin in ~/.gemini/config/plugins/room with
+ * the MCP server (mcp_config.json), the ping hooks (hooks.json:
+ * PreInvocation for the note, Stop to hold a turn once), and the room skill.
+ * Antigravity enables plugins it finds there by default.
+ */
+export async function setupAntigravity(o: { home?: string; dryRun?: boolean; log?: (l: string) => void } = {}): Promise<void> {
+  const log = o.log ?? ((l: string) => console.log(l));
+  const dir = join(o.home ?? homedir(), ".gemini", "config", "plugins", "room");
+  const { mcp, hook } = entryPoints();
+  const cmd = (arg: string) => ({ type: "command", command: [...hook, arg].map(quote).join(" "), timeout: 5 });
+  const files: Record<string, string> = {
+    "plugin.json": JSON.stringify({ name: "room", version: "0.0.1", description: "Join a hosted room to talk with the human and other agents' sessions" }, null, 2),
+    "mcp_config.json": JSON.stringify({ mcpServers: { room: { command: mcp[0], args: mcp.slice(1) } } }, null, 2),
+    "hooks.json": JSON.stringify({ room: { PreInvocation: [cmd("invocation")], Stop: [cmd("stop")] } }, null, 2),
+    "skills/room/SKILL.md": ROOM_SKILL,
+  };
+  if (o.dryRun) {
+    for (const [f, text] of Object.entries(files)) log(`would write ${join(dir, f)}:\n${text}`);
+    return;
+  }
+  for (const [f, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(dir, f)), { recursive: true });
+    writeFileSync(join(dir, f), text.endsWith("\n") ? text : text + "\n");
+  }
+  log(`wrote the room plugin to ${dir} (MCP server, hooks, and a room skill)`);
+  log("Restart Antigravity; the server should show under ... > MCP Servers.");
+  log("Not yet confirmed: the output shape PreInvocation and Stop hooks use. Start Antigravity with ROOM_HOOK_LOG=/tmp/room-hook.log to see each run.");
+}
+
+function writeSkill(dir: string, log: (l: string) => void): void {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "SKILL.md"), ROOM_SKILL);
+  log(`wrote the room skill to ${join(dir, "SKILL.md")}`);
 }
