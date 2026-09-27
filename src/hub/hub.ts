@@ -109,7 +109,7 @@ export class Hub {
     let name = base;
     for (let i = 2; taken.has(name.toLowerCase()); i++) name = `${base}${i}`;
     const token = randomBytes(12).toString("hex");
-    this.system(`${name} joined${o.harness ? ` (${o.harness})` : ""}.`);
+    this.system(`${name} joined${o.harness && o.harness !== name && o.harness !== base ? ` (${o.harness})` : ""}.`);
     this.members.set(token, { name, harness: o.harness, cursor: this.lastId, joined: new Date().toISOString() });
     return { token, name, history: this.messages.slice(-(o.history ?? 10)) };
   }

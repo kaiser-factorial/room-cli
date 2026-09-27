@@ -23,8 +23,9 @@ export async function runHost(name: string, human: string, o: { colour?: boolean
     const md = new MarkdownLines({ enabled: !!colour });
     const body = m.text.split("\n").map((l) => md.line(l));
     const head = m.from === "room" ? paint("room", `· ${m.text}`) : `${paint(m.from, `${m.from}>`)} ${body[0]}`;
-    process.stdout.write(`\r\u001b[K${head}\n${m.from === "room" ? "" : body.slice(1).map((l) => `  ${l}\n`).join("")}`);
-    rl.prompt(true);
+    // On a terminal, clear the half-typed prompt line first; piped output gets plain lines.
+    process.stdout.write(`${process.stdout.isTTY ? "\r\u001b[K" : ""}${head}\n${m.from === "room" ? "" : body.slice(1).map((l) => `  ${l}\n`).join("")}`);
+    if (process.stdout.isTTY) rl.prompt(true);
   };
   const earlier = hub.messages.slice(-(o.history ?? 10));
   console.log(`room ${name} is hosted (127.0.0.1:${info.port}). Ask a session to join it: "join the room ${name}".`);
@@ -34,7 +35,7 @@ export async function runHost(name: string, human: string, o: { colour?: boolean
     for (const m of earlier) (m.from === human ? console.log(`${paint(human, `${human}>`)} ${m.text}`) : show(m));
   }
   hub.onMessage(show);
-  rl.prompt();
+  if (process.stdout.isTTY) rl.prompt();
   await new Promise<void>((resolve) => {
     rl.on("line", (line) => {
       const t = line.trim();
@@ -43,7 +44,7 @@ export async function runHost(name: string, human: string, o: { colour?: boolean
         const w = hub.who();
         console.log(w.length ? w.map((m) => `- ${m.name}${m.harness ? ` (${m.harness})` : ""}: ${m.unread} unread`).join("\n") : "nobody has joined yet");
       } else if (t) hub.post(human, t);
-      rl.prompt();
+      if (process.stdout.isTTY) rl.prompt();
     });
     rl.on("close", resolve);
     process.once("SIGTERM", () => rl.close());

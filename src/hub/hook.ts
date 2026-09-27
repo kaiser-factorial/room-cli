@@ -50,7 +50,7 @@ export async function hookOutput(event: HookEvent, input: HookInput, o: HookDeps
   const who = peek.from.join(", ");
   const note =
     `[room ${m.room}] ${peek.unread} new message${peek.unread === 1 ? "" : "s"} from ${who}` +
-    `${peek.addressed ? ` (${peek.addressed} tagging you, @${m.name})` : ""}. Latest: ${peek.preview}. ` +
+    `${peek.addressed ? ` (${peek.addressed} tagging you, @${m.name})` : ""}. Latest: ${peek.preview}${/[.!?…]$/.test(peek.preview ?? "") ? "" : "."} ` +
     `Read them with the room inbox tool (mcp__room__inbox; on Grok, use_tool room__inbox; elsewhere, the room server's inbox) when you reach a good stopping point; no need to drop what you are doing.`;
   if (event === "stop") {
     // Only for a message that asks this session something, once per message, and never twice in a row.
