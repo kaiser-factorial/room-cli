@@ -14,8 +14,8 @@ export interface BuildStamp {
 }
 
 export function buildStamp(): BuildStamp | undefined {
-  // dist/packages/room/src/build-info.js → dist/build.json. From source (tsx, tests) there is none.
-  const path = fileURLToPath(new URL("../../../build.json", import.meta.url));
+  // dist/src/build-info.js → dist/build.json. From source (tsx, tests) there is none.
+  const path = fileURLToPath(new URL("../build.json", import.meta.url));
   if (!existsSync(path)) return undefined;
   try {
     return JSON.parse(readFileSync(path, "utf8")) as BuildStamp;

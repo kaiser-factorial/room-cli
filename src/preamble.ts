@@ -3,7 +3,7 @@
  * persona from the web app's role presets.
  */
 import { readFileSync } from "node:fs";
-import { ROLE_PRESETS } from "../../../src/lib/roles.js";
+import { ROLE_PRESETS } from "./roles.js";
 import type { SeatConfig } from "./seat/types.js";
 
 /** Persona text from `prompt` or `promptFile`, or undefined. */

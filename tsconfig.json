@@ -15,14 +15,13 @@
     "declaration": true,
     "sourceMap": true,
     "outDir": "./dist",
-    "rootDir": "../..",
+    "rootDir": ".",
     "jsx": "react-jsx"
   },
   "include": [
     "src",
     "bin",
-    "scripts",
-    "../../src/lib/roles.ts"
+    "scripts"
   ],
   "exclude": [
     "dist",

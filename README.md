@@ -9,21 +9,23 @@ context window; the room holds only the transcript and the session ids. When
 a seat wants to do something gated, its `session/request_permission` is
 forwarded to you. Nothing is auto-approved unless a seat's own config says so.
 
-Design doc: *Joint Session CLI Design* (Claude Docs). Phases 0 to 4 are
+It began in [joint-session](https://github.com/kaiser-factorial/joint-session)
+(`packages/room`), whose history it carries; the role presets
+(`src/roles.ts`) are a copy of that web app's. Design doc: *Joint Session
+CLI Design* (Claude Docs). Phases 0 to 4 are
 done: the doctor, a room with a streaming REPL, the CLI fallback adapter,
 seats that address each other, pass, and answer in parallel, and the room
 served to an editor as an ACP agent, with resume.
 
 ## Install
 
-The room is a pnpm package of its own, outside the web app's npm
-workspace. It needs Node 22 or newer and pnpm 11 (`brew install pnpm`, or
+It needs Node 22 or newer and pnpm 11 (`brew install pnpm`, or
 `corepack enable`; `packageManager` pins the version). pnpm keeps one content-addressed store per machine,
 so the adapters' dependencies take disk space once however many checkouts
 use them.
 
 ```bash
-cd packages/room
+git clone https://github.com/kaiser-factorial/room-cli && cd room-cli
 pnpm install && pnpm build
 pnpm add -g link:$PWD     # `room` on PATH, running this checkout; rebuild after pulling
 ```
@@ -33,7 +35,12 @@ pnpm 11 puts global commands in `$PNPM_HOME/bin` (pnpm 10 used
 protocol above. If `pnpm add -g` says the global bin directory is not in
 PATH, add `export PATH="$PNPM_HOME/bin:$PATH"` to your shell profile.
 For an install that does not follow the checkout, the way a pip install
-would not: `pnpm pack`, then `pnpm add -g ./local-room-0.0.1.tgz`.
+would not: `pnpm pack`, then `pnpm add -g ./room-cli-0.0.1.tgz`.
+
+`room setup <harness>` writes the full path of this build into the
+harness's config (its MCP server and hooks). Keep the checkout where it is,
+and `git pull && pnpm build` updates it in place; if you move it, run setup
+again.
 
 Dependency install scripts run only where `pnpm-workspace.yaml` allows
 them (`allowBuilds`), and pnpm 11 will not install a release younger than
@@ -524,7 +531,7 @@ seats = ["claude", "grok", "hermes"]
 claude = "default"
 
 [roles]
-grok = "critic"          # a preset from the web app's roles.ts
+grok = "critic"          # a preset from src/roles.ts
 
 [policy.claude]
 allow = ["read"]
@@ -610,7 +617,7 @@ name = "claude"
 adapter = "acp"                 # "acp" (default) or "cli" (phase 2 fallback)
 command = "claude-agent-acp"    # resolved on PATH plus the workspace .bin dirs
 args = []
-role = "critic"                 # a preset from the web app's roles.ts
+role = "critic"                 # a preset from src/roles.ts
 mode = "default"                # session mode to set at start, if advertised
 allow = ["read"]                # room policy: kinds or title globs
 ask = []

@@ -1,5 +1,5 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": { "sourceMap": false },
-  "include": ["src", "bin", "../../src/lib/roles.ts"]
+  "include": ["src", "bin"]
 }

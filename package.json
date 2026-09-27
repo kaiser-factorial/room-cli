@@ -1,5 +1,5 @@
 {
-  "name": "@local/room",
+  "name": "room-cli",
   "version": "0.0.1",
   "description": "A terminal room for one human and several coding agents, over the Agent Client Protocol",
   "type": "module",
@@ -9,12 +9,12 @@
     "node": ">=22"
   },
   "bin": {
-    "room": "./dist/packages/room/bin/room.js"
+    "room": "./dist/bin/room.js"
   },
   "files": [
-    "dist/packages/room/bin",
-    "dist/packages/room/src",
+    "dist/bin",
     "dist/src",
+    "dist/build.json",
     "README.md"
   ],
   "scripts": {
@@ -45,5 +45,9 @@
     "tsx": "^4.20.0",
     "typescript": "~6.0.2",
     "vitest": "^3.2.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kaiser-factorial/room-cli.git"
   }
 }
