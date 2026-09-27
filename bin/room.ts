@@ -27,6 +27,10 @@ import { createElement } from "react";
 import { findMcpServers, findSkills } from "../src/discover.js";
 import { archiveRoom, humanBytes, listRooms, pruneRooms, readTranscript } from "../src/history.js";
 import { applySecrets, hasSettings, loadSecrets, loadSettings, saveOpenRouterKey, saveSettings, type Settings } from "../src/settings.js";
+import { runHost } from "../src/hub/host.js";
+import { runJoinServer } from "../src/hub/join.js";
+import { runHook } from "../src/hub/hook.js";
+import { setupClaude } from "../src/hub/setup.js";
 import { Menu, type MenuContext, type MenuResult } from "../src/ui/menu/menu.js";
 
 applySecrets();
@@ -317,6 +321,36 @@ async function runMenu(): Promise<void> {
     await runRoom(r.name, lineup([], undefined, Room.savedSeats(r.cwd, r.name)), { ...defaults, cwd: r.cwd });
   }
 }
+
+program
+  .command("host <name>")
+  .description("Host a room that sessions already running elsewhere (Claude Code, Grok) join through `room mcp`")
+  .option("--human <name>", "your name in the room (default: the menu's, else Corina)")
+  .action(async (name: string, opts: { human?: string }) => {
+    const saved = withConfig(() => loadSettings());
+    await runHost(name, opts.human ?? saved.human ?? "Corina");
+  });
+
+program
+  .command("mcp")
+  .description("The MCP server a harness registers to join hosted rooms (stdio); `room setup claude` registers it")
+  .action(() => runJoinServer());
+
+program
+  .command("hook <event>")
+  .description("Claude Code hook: a quiet note when a hosted room has something new (post-tool, prompt, stop)")
+  .action((event: string) => runHook(event));
+
+program
+  .command("setup <harness>")
+  .description("Register `room mcp` and the room's hooks with a harness (claude)")
+  .option("--dry-run", "say what would change, change nothing")
+  .action(async (harness: string, opts: { dryRun?: boolean }) => {
+    if (harness !== "claude") {
+      throw new ConfigError(`setup knows claude so far; for another harness, register this stdio MCP server by hand: room mcp`);
+    }
+    await setupClaude({ dryRun: opts.dryRun });
+  });
 
 program
   .command("prune [rooms...]")

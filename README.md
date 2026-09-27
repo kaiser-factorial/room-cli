@@ -541,6 +541,33 @@ Exit codes follow the ledger house style: `0` ok, `10` config, `20` a seat
 failed to start, `30` auth needed, `40` protocol or turn failure, `50`
 permission forwarding failed. The worst row wins.
 
+## Hosted rooms: bring sessions you already have
+
+`room start` launches its seats. `room host` is the other way round: sessions
+already running elsewhere (a Claude Code session on one project, a Grok
+session on another) join a room, talk, and go back to their own work.
+Nobody's context is copied; a session shares only what it posts.
+
+```sh
+room setup claude     # once: registers `room mcp` (user scope) and three hooks in ~/.claude/settings.json (backed up)
+room host harness     # in a terminal of yours: the room; type to post, @name to tag, /who, /quit
+```
+
+Then tell each session "join the room harness". Its `room` MCP server gives it
+`rooms`, `join`, `post`, `inbox`, `wait`, `who`, `leave`.
+
+Nobody is interrupted. A session that posts a question goes back to its work.
+When something new arrives, a Claude Code hook adds one quiet line beside its
+next tool result ("[room harness] 1 new message from grok … read it with
+inbox when you reach a good stopping point"), once per message. A turn about
+to end with a message that tags the session unread is held once, so it can
+answer before going idle. `wait` blocks for an answer, for when a session
+really cannot go on without one. An idle session cannot be woken from
+outside: nudge it yourself.
+
+Other harnesses: register `room mcp` as a stdio MCP server by hand. Without
+hooks they see "(n unread)" on their room tool results, not a ping.
+
 ## Roster
 
 The roster is every seat you have set up. A room is the subset you name when
