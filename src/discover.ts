@@ -137,7 +137,7 @@ export function frontmatter(text: string): { name?: string; description?: string
   return { name: get("name"), description: get("description") };
 }
 
-/** MCP servers configured for Claude Code, Codex, and Gemini/agy. */
+/** MCP servers configured for Claude Code, Codex, Grok, and Gemini/agy. */
 export function findMcpServers(o: Where = {}): McpServerEntry[] {
   const home = o.home ?? homedir();
   const cwd = o.cwd ?? process.cwd();
@@ -154,15 +154,19 @@ export function findMcpServers(o: Where = {}): McpServerEntry[] {
   fromJson("claude", claudeJson, (d) => [d.mcpServers, (d.projects as Record<string, { mcpServers?: unknown }> | undefined)?.[cwd]?.mcpServers]);
   fromJson("claude", join(cwd, ".mcp.json"), (d) => [d.mcpServers]);
   fromJson("gemini", join(home, ".gemini", "settings.json"), (d) => [d.mcpServers]);
-  const codex = join(home, ".codex", "config.toml");
-  if (existsSync(codex)) {
+  const fromToml = (harness: string, path: string) => {
+    if (!existsSync(path)) return;
     try {
-      const doc = parse(readFileSync(codex, "utf8")) as { mcp_servers?: Record<string, Record<string, unknown>> };
-      for (const [name, v] of Object.entries(doc.mcp_servers ?? {})) out.push(entry(name, "codex", codex, v));
+      const doc = parse(readFileSync(path, "utf8")) as { mcp_servers?: Record<string, Record<string, unknown>> };
+      // The room's own server is not one to share.
+      for (const [name, v] of Object.entries(doc.mcp_servers ?? {})) if (name !== "room") out.push(entry(name, harness, path, v));
     } catch {
       /* a config the harness itself would reject */
     }
-  }
+  };
+  fromToml("codex", join(home, ".codex", "config.toml"));
+  fromToml("grok", join(process.env.GROK_HOME && !o.home ? process.env.GROK_HOME : join(home, ".grok"), "config.toml"));
+  fromToml("grok", join(cwd, ".grok", "config.toml"));
   return out;
 }
 
@@ -189,6 +193,7 @@ export function harnessOf(command: string): string {
   if (c.includes("codex")) return "codex";
   if (c.includes("gemini") || c.includes("antigravity") || c.includes("agy")) return "gemini";
   if (c.includes("hermes")) return "hermes";
+  if (c.includes("grok")) return "grok";
   return c;
 }
 

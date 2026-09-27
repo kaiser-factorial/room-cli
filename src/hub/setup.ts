@@ -85,3 +85,41 @@ export async function setupMcpOnly(harness: string, o: { dryRun?: boolean; log?:
   );
   log(`${harness} has no room hooks yet: its sessions see "(n unread)" on room tool results, not a ping. Restart its sessions to pick up the server.`);
 }
+
+/** A `[mcp_servers.room]` table in a Grok or Codex config.toml, replacing an earlier one and leaving the rest of the file as it was. */
+export function withRoomTable(toml: string, command: string[]): string {
+  const table = [`[mcp_servers.room]`, `command = ${JSON.stringify(command[0])}`, `args = [${command.slice(1).map((a) => JSON.stringify(a)).join(", ")}]`].join("\n");
+  const re = /^\[mcp_servers\.room\][^\n]*\n(?:(?!\[)[^\n]*\n?)*/m;
+  if (re.test(toml)) return toml.replace(re, `${table}\n\n`).replace(/\n{3,}/g, "\n\n");
+  return `${toml.replace(/\s*$/, "")}${toml.trim() ? "\n\n" : ""}${table}\n`;
+}
+
+/**
+ * `room setup grok`: the server as a table in GROK_HOME/config.toml (user
+ * config needs no folder trust), and the ping hooks as GROK_HOME/hooks/room.json.
+ * Grok runs hooks on the same events as Claude; whether it acts on their
+ * output is not confirmed, so ROOM_HOOK_LOG is there to check.
+ */
+export async function setupGrok(o: { grokHome?: string; dryRun?: boolean; log?: (l: string) => void } = {}): Promise<void> {
+  const log = o.log ?? ((l: string) => console.log(l));
+  const home = o.grokHome ?? process.env.GROK_HOME ?? join(homedir(), ".grok");
+  const { mcp, hook } = entryPoints();
+  const config = join(home, "config.toml");
+  const current = existsSync(config) ? readFileSync(config, "utf8") : "";
+  const next = withRoomTable(current, mcp);
+  const hooksFile = join(home, "hooks", "room.json");
+  const hooks = { hooks: withRoomHooks({}, hook).hooks };
+  if (o.dryRun) {
+    log(`would write to ${config}:\n${next}`);
+    log(`would write ${hooksFile}:\n${JSON.stringify(hooks, null, 2)}`);
+    return;
+  }
+  mkdirSync(join(home, "hooks"), { recursive: true });
+  if (existsSync(config)) copyFileSync(config, `${config}.room-backup`);
+  writeFileSync(config, next);
+  writeFileSync(hooksFile, JSON.stringify(hooks, null, 2) + "\n");
+  log(`added [mcp_servers.room] to ${config}${existsSync(`${config}.room-backup`) ? ` (backup: ${config}.room-backup)` : ""}`);
+  log(`wrote the room's hooks to ${hooksFile}`);
+  log("Restart Grok sessions to pick them up; `grok inspect` should list both.");
+  log("Not yet confirmed: that Grok acts on a hook's output. To check, start grok with ROOM_HOOK_LOG=/tmp/room-hook.log, join a room, have someone post, and see whether a note reaches it.");
+}

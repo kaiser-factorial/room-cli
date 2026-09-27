@@ -9,11 +9,17 @@
  * - stop (Stop): a turn about to end with a message that tags this session
  *   unread is held once, so the session can answer before it goes idle.
  */
-import { readFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 import { ancestors, callHub, memberships, procInfo, saveMembership, type Membership, type ProcInfo } from "./client.js";
 import type { Peek } from "./hub.js";
 
 export type HookEvent = "post-tool" | "prompt" | "stop";
+
+/** What a hook gets on stdin: Claude's snake_case fields, and Grok's camelCase ones beside them. */
+export interface HookInput {
+  stop_hook_active?: boolean;
+  stopHookActive?: boolean;
+}
 
 export interface HookDeps {
   env?: NodeJS.ProcessEnv;
@@ -35,7 +41,7 @@ export function findMembership(o: HookDeps = {}): Membership | undefined {
 }
 
 /** The hook's stdout for one event, or "" for nothing to say. */
-export async function hookOutput(event: HookEvent, input: { stop_hook_active?: boolean }, o: HookDeps = {}): Promise<string> {
+export async function hookOutput(event: HookEvent, input: HookInput, o: HookDeps = {}): Promise<string> {
   const m = findMembership(o);
   if (!m) return "";
   const peek = await (o.peek ?? ((x: Membership) => callHub<Peek>(x, "peek", { token: x.token }, 1500)))(m);
@@ -44,10 +50,10 @@ export async function hookOutput(event: HookEvent, input: { stop_hook_active?: b
   const note =
     `[room ${m.room}] ${peek.unread} new message${peek.unread === 1 ? "" : "s"} from ${who}` +
     `${peek.addressed ? ` (${peek.addressed} tagging you, @${m.name})` : ""}. Latest: ${peek.preview}. ` +
-    `Read them with the room inbox tool when you reach a good stopping point; no need to drop what you are doing.`;
+    `Read them with the room inbox tool (mcp__room__inbox; on Grok, use_tool room__inbox) when you reach a good stopping point; no need to drop what you are doing.`;
   if (event === "stop") {
     // Only for a message that asks this session something, once per message, and never twice in a row.
-    if (!peek.addressed || input.stop_hook_active || (m.held ?? 0) >= peek.lastId) return "";
+    if (!peek.addressed || input.stop_hook_active || input.stopHookActive || (m.held ?? 0) >= peek.lastId) return "";
     saveMembership({ ...m, held: peek.lastId, pinged: peek.lastId }, o.env);
     return JSON.stringify({
       decision: "block",
@@ -66,7 +72,7 @@ export async function runHook(event: string): Promise<void> {
     process.exitCode = 0;
     return;
   }
-  let input: { stop_hook_active?: boolean } = {};
+  let input: HookInput = {};
   try {
     input = JSON.parse(readFileSync(0, "utf8") || "{}") as typeof input;
   } catch {
@@ -75,6 +81,8 @@ export async function runHook(event: string): Promise<void> {
   try {
     const out = await hookOutput(event, input);
     if (out) process.stdout.write(out + "\n");
+    // ROOM_HOOK_LOG=<file>: one line per run, to check a harness really runs the hook (and what it said).
+    if (process.env.ROOM_HOOK_LOG) appendFileSync(process.env.ROOM_HOOK_LOG, `${new Date().toISOString()} ${event} ${out ? "said something" : "quiet"}\n`);
   } catch {
     /* a hook never gets in the session's way */
   }

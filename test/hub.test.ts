@@ -170,3 +170,40 @@ describe("hosted rooms", () => {
     expect(hub.who()).toEqual([]);
   }, 20_000);
 });
+
+describe("setup for grok", () => {
+  it("writes the server table into config.toml without touching the rest, and replaces its own on a rerun", async () => {
+    const { withRoomTable, setupGrok } = await import("../src/hub/setup.js");
+    const theirs = `model = "grok-4.5"\n\n[mcp_servers.linear]\ncommand = "npx"\nargs = ["linear-mcp"]\n`;
+    const once = withRoomTable(theirs, ["/usr/bin/node", "/x/join.js"]);
+    expect(once).toContain(`[mcp_servers.linear]\ncommand = "npx"`);
+    expect(once).toContain(`[mcp_servers.room]\ncommand = "/usr/bin/node"\nargs = ["/x/join.js"]`);
+    const again = withRoomTable(once, ["/opt/node", "/y/join.js"]);
+    expect(again.match(/\[mcp_servers\.room\]/g)!.length).toBe(1);
+    expect(again).toContain(`args = ["/y/join.js"]`);
+    expect(again.startsWith(`model = "grok-4.5"`)).toBe(true);
+
+    const env = scratchEnv();
+    const home = join(env.ROOM_CONFIG_DIR!, "grok-home");
+    const lines: string[] = [];
+    await setupGrok({ grokHome: home, log: (l) => lines.push(l) });
+    const { readFileSync } = await import("node:fs");
+    expect(readFileSync(join(home, "config.toml"), "utf8")).toContain("[mcp_servers.room]");
+    const hooks = JSON.parse(readFileSync(join(home, "hooks", "room.json"), "utf8"));
+    expect(Object.keys(hooks.hooks)).toEqual(["PostToolUse", "UserPromptSubmit", "Stop"]);
+    const { findMcpServers } = await import("../src/discover.js");
+    // The room's own server is never offered for sharing.
+    expect(findMcpServers({ home: join(env.ROOM_CONFIG_DIR!, "nohome"), cwd: env.ROOM_CONFIG_DIR! }).some((m) => m.name === "room")).toBe(false);
+  });
+
+  it("the hook honours Grok's camelCase stopHookActive", async () => {
+    const { env, hub, session } = await hosted();
+    const s = session();
+    await s.call("join", { as: "grok" });
+    const me = s.membership!;
+    const deps = { env, self: 5, info: ((pid: number) => (pid === 5 ? { ppid: me.harnessPid, comm: "sh" } : undefined)) as ProcInfo };
+    hub.post("claude", "@grok ping");
+    expect(await hookOutput("stop", { stopHookActive: true }, deps)).toBe("");
+    expect(JSON.parse(await hookOutput("stop", {}, deps)).reason).toContain("use_tool room__inbox");
+  });
+});

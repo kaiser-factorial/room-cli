@@ -30,7 +30,7 @@ import { applySecrets, hasSettings, loadSecrets, loadSettings, saveOpenRouterKey
 import { runHost } from "../src/hub/host.js";
 import { runJoinServer } from "../src/hub/join.js";
 import { runHook } from "../src/hub/hook.js";
-import { setupClaude, setupMcpOnly } from "../src/hub/setup.js";
+import { setupClaude, setupGrok, setupMcpOnly } from "../src/hub/setup.js";
 import { Menu, type MenuContext, type MenuResult } from "../src/ui/menu/menu.js";
 
 applySecrets();
@@ -362,11 +362,12 @@ program
 
 program
   .command("setup <harness>")
-  .description("Register `room mcp` with a harness (claude also gets the ping hooks; grok, codex, hermes the server only)")
+  .description("Register `room mcp` with a harness (claude and grok also get the ping hooks; codex, hermes the server only)")
   .option("--dry-run", "say what would change, change nothing")
   .action(async (harness: string, opts: { dryRun?: boolean }) => {
     if (harness === "claude") return setupClaude({ dryRun: opts.dryRun });
-    if (["grok", "codex", "hermes"].includes(harness)) return setupMcpOnly(harness, { dryRun: opts.dryRun });
+    if (harness === "grok") return setupGrok({ dryRun: opts.dryRun });
+    if (["codex", "hermes"].includes(harness)) return setupMcpOnly(harness, { dryRun: opts.dryRun });
     throw new ConfigError(`setup knows claude, grok, codex, and hermes; for another harness, register this stdio MCP server by hand: room mcp`);
   });
 

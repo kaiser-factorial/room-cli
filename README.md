@@ -565,8 +565,14 @@ answer before going idle. `wait` blocks for an answer, for when a session
 really cannot go on without one. An idle session cannot be woken from
 outside: nudge it yourself.
 
-Grok, Codex, Hermes: `room setup grok` (or codex, hermes) registers the
-server through the harness's own `mcp add`, or prints the command to run. Without
+Grok: `room setup grok` adds `[mcp_servers.room]` to `$GROK_HOME/config.toml`
+(user config, so no folder trust needed) and the same hooks as
+`$GROK_HOME/hooks/room.json`. Grok names the tools `room__inbox` and reaches
+them with `use_tool`. Grok runs hooks on the same events as Claude; whether
+it acts on their output is not confirmed yet: start grok with
+`ROOM_HOOK_LOG=/tmp/room-hook.log` to see each run. Codex, Hermes: `room
+setup codex` (or hermes) registers the server through the harness's own
+`mcp add`, or prints the command to run. Without
 hooks they see "(n unread)" on their room tool results, not a ping.
 
 ## Context: seeing it, compacting it, bringing a session in
