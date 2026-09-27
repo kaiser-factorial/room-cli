@@ -66,3 +66,22 @@ export async function setupClaude(o: { home?: string; dryRun?: boolean; log?: (l
   log(`added the room's hooks to ${file}${existsSync(`${file}.room-backup`) ? ` (backup: ${file}.room-backup)` : ""}`);
   log("Restart your Claude Code sessions to pick them up. Then: `room host <name>` here, and ask a session to join it.");
 }
+
+/**
+ * `room setup grok|codex|hermes`: register `room mcp` with that harness's own
+ * `mcp add`. No hooks yet: their sessions see "(n unread)" on their room
+ * tool results rather than a ping. When the harness's CLI is not found or
+ * refuses, the command to run by hand is printed instead.
+ */
+export async function setupMcpOnly(harness: string, o: { dryRun?: boolean; log?: (l: string) => void } = {}): Promise<void> {
+  const log = o.log ?? ((l: string) => console.log(l));
+  const { mcp } = entryPoints();
+  const add = [harness, "mcp", "add", "room", "--", ...mcp];
+  const line = add.map(quote).join(" ");
+  if (o.dryRun) return log(`would run: ${line}`);
+  await run(add[0], add.slice(1)).then(
+    () => log(`registered the room MCP server with ${harness}`),
+    (err: Error) => log(`could not register it (${err.message.split("\n")[0]}). Register this stdio MCP server with ${harness} yourself:\n  ${line}`),
+  );
+  log(`${harness} has no room hooks yet: its sessions see "(n unread)" on room tool results, not a ping. Restart its sessions to pick up the server.`);
+}

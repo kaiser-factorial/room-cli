@@ -19,6 +19,8 @@ export const COMMAND_HELP = `  /seats                 seats, modes, and what is 
   /check [cmd|off]       a command that must pass in a seat's desk before its work lands (e.g. pnpm typecheck && pnpm test)
   /mute <seat>, /unmute   untagged messages and @all skip a muted seat; @seat still wakes it
   /land <seat> [--force]           merge a seat's desk into the trunk now (seats land their own with [land])
+  /context               each seat's context use, as its harness reports it
+  /compact <seat> [focus]  compact a seat's context (keeping what the focus names); /cmd <seat> /<command> runs any of its own commands
   /bg <seat> <task>      the seat works on it in its desk while the room goes on
   /stop <seat>           cancel a seat's background work
   /perm <seat>           show a seat's policy
@@ -98,10 +100,37 @@ export async function runCommand(room: Room, text: string, out: (line: string) =
           (room.benched.has(name) ? "  (benched)" : "") +
           (ahead ? `  (${ahead} commit${ahead === 1 ? "" : "s"} not landed)` : "") +
           (room.background.has(name) ? "  (background)" : "");
-        out(`  ${name.padEnd(8)} mode ${mode.padEnd(12)} session ${room.state.sessions[name] ?? "-"}${benched}`);
+        const u = room.usageOf(name);
+        out(`  ${name.padEnd(8)} mode ${mode.padEnd(12)} session ${room.state.sessions[name] ?? "-"}${u ? `  context ${contextLine(u)}` : ""}${benched}`);
       }
       if (room.queued.length) out(`  next: ${room.queued.join(" → ")}`);
       out(`  untagged messages wake: ${room.state.wake === "last" ? "whoever spoke last" : "every idle seat"}; seat-to-seat cap: ${room.cap ?? "off"}; moderator: ${room.moderator?.label ?? "off"}`);
+      return;
+    }
+    case "/context": {
+      for (const name of room.seatNames) out(`  ${name.padEnd(8)} ${contextLine(room.usageOf(name))}`);
+      return;
+    }
+    case "/compact":
+    case "/cmd": {
+      const [seat, ...rest] = args;
+      if (!seat || !room.seatNames.includes(seat)) {
+        return out(`  usage: ${cmd === "/compact" ? "/compact <seat> [what to keep]" : "/cmd <seat> /<command> [args]"}; seats: ${room.seatNames.join(", ")}`);
+      }
+      const line = cmd === "/compact" ? `compact ${rest.join(" ")}` : rest.join(" ");
+      if (!line.trim()) {
+        const cmds = room.commandsOf(seat);
+        return out(cmds.length ? cmds.map((c) => `  /${c.name.padEnd(14)} ${c.description}`).join("\n") : `  ${seat} advertises no commands`);
+      }
+      const before = room.usageOf(seat);
+      out(`  ${seat}: /${line.trim().replace(/^\//, "")} ...`);
+      try {
+        const said = await room.seatCommand(seat, line);
+        if (said) out(said.split("\n").map((l) => `  ${l}`).join("\n"));
+        if (cmd === "/compact") out(`  ${seat}: ${contextLine(before)} → ${contextLine(room.usageOf(seat))}`);
+      } catch (err) {
+        out(`  ${(err as Error).message}`);
+      }
       return;
     }
     case "/bg": {
@@ -187,4 +216,11 @@ export async function runCommand(room: Room, text: string, out: (line: string) =
     default:
       out(`  unknown command ${cmd}; /help`);
   }
+}
+
+/** "62% (124k of 200k)", or a note that the harness does not say. */
+export function contextLine(u: { used: number; size: number } | undefined): string {
+  if (!u || !u.size) return "not reported by its harness";
+  const k = (n: number) => (n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
+  return `${Math.round((u.used / u.size) * 100)}% (${k(u.used)} of ${k(u.size)})`;
 }

@@ -30,7 +30,7 @@ import { applySecrets, hasSettings, loadSecrets, loadSettings, saveOpenRouterKey
 import { runHost } from "../src/hub/host.js";
 import { runJoinServer } from "../src/hub/join.js";
 import { runHook } from "../src/hub/hook.js";
-import { setupClaude } from "../src/hub/setup.js";
+import { setupClaude, setupMcpOnly } from "../src/hub/setup.js";
 import { Menu, type MenuContext, type MenuResult } from "../src/ui/menu/menu.js";
 
 applySecrets();
@@ -140,6 +140,8 @@ interface StartOptions {
   auto?: boolean;
   tui?: boolean;
   role?: string[];
+  session?: string[];
+  inPlace?: boolean;
   wake?: string;
   cap?: string;
   moderator?: string;
@@ -162,7 +164,24 @@ function roomOptions(cmd: Command): Command {
     .option("--land-check <command>", "a command that must pass in a seat's desk before its work lands, e.g. \"pnpm typecheck && pnpm test\"")
     .option("--tui", "full-screen terminal UI: live seat boxes, a status bar, and the input always open")
     .option("--role <seat=role...>", "give seats roles from the web app's presets, e.g. --role grok=critic claude=implementer")
+    .option("--session <seat=id...>", "bring in a harness session made outside the room, e.g. --session claude=<session id> (a copy, unless --in-place)")
+    .option("--in-place", "with --session: open the session itself rather than a copy (close it anywhere else first)")
     .option("--turn-timeout <seconds>", "per-turn timeout", "600");
+}
+
+/** `--session claude=<id>`: those seats open that harness session (a fork unless --in-place). */
+function withSessions(seats: SeatConfig[], pairs: string[] | undefined, inPlace?: boolean): SeatConfig[] {
+  if (!pairs?.length) return seats;
+  const set = new Map<string, string>();
+  for (const p of pairs) {
+    const at = p.indexOf("=");
+    const seat = p.slice(0, at);
+    const id = p.slice(at + 1);
+    if (at < 1 || !id) withConfig(() => { throw new ConfigError(`--session takes seat=id, e.g. claude=6f1c... (got "${p}")`); });
+    if (!seats.some((s) => s.name === seat)) withConfig(() => { throw new ConfigError(`--session: no seat "${seat}" in this room`); });
+    set.set(seat, id);
+  }
+  return seats.map((s) => (set.has(s.name) ? { ...s, session: set.get(s.name), fork: !inPlace } : s));
 }
 
 function wakeOpt(v: string | undefined): "last" | "all" | undefined {
@@ -217,7 +236,7 @@ function lineup(names: string[], roomFile: string | undefined, fallback: string[
 async function runRoom(name: string, lineupSeats: SeatConfig[], opts: StartOptions): Promise<void> {
   const cwd = resolve(opts.cwd);
   const saved = withConfig(() => loadSettings());
-  const seats = withPersonas(withRoles(withRoles(lineupSeats, settingRoles(lineupSeats, saved)), opts.role), saved);
+  const seats = withSessions(withPersonas(withRoles(withRoles(lineupSeats, settingRoles(lineupSeats, saved)), opts.role), saved), opts.session, opts.inPlace);
   const tui = opts.tui ?? saved.tui ?? false;
   const found = findMcpServers({ cwd });
   const base = {
@@ -343,13 +362,12 @@ program
 
 program
   .command("setup <harness>")
-  .description("Register `room mcp` and the room's hooks with a harness (claude)")
+  .description("Register `room mcp` with a harness (claude also gets the ping hooks; grok, codex, hermes the server only)")
   .option("--dry-run", "say what would change, change nothing")
   .action(async (harness: string, opts: { dryRun?: boolean }) => {
-    if (harness !== "claude") {
-      throw new ConfigError(`setup knows claude so far; for another harness, register this stdio MCP server by hand: room mcp`);
-    }
-    await setupClaude({ dryRun: opts.dryRun });
+    if (harness === "claude") return setupClaude({ dryRun: opts.dryRun });
+    if (["grok", "codex", "hermes"].includes(harness)) return setupMcpOnly(harness, { dryRun: opts.dryRun });
+    throw new ConfigError(`setup knows claude, grok, codex, and hermes; for another harness, register this stdio MCP server by hand: room mcp`);
   });
 
 program

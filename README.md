@@ -565,8 +565,24 @@ answer before going idle. `wait` blocks for an answer, for when a session
 really cannot go on without one. An idle session cannot be woken from
 outside: nudge it yourself.
 
-Other harnesses: register `room mcp` as a stdio MCP server by hand. Without
+Grok, Codex, Hermes: `room setup grok` (or codex, hermes) registers the
+server through the harness's own `mcp add`, or prints the command to run. Without
 hooks they see "(n unread)" on their room tool results, not a ping.
+
+## Context: seeing it, compacting it, bringing a session in
+
+`/context` shows each seat's context use as its harness reports it (Claude's
+does; others may not). `/compact <seat> [what to keep]` sends the seat its
+own `/compact` between turns, e.g. `/compact claude keep the adapter
+findings`: no room message, no preamble, and a before/after. `/cmd <seat>
+/<command>` runs any command the seat advertises; `/cmd <seat>` lists them.
+
+`--session claude=<id>` opens a seat on a session made outside the room,
+say last week's work, with all its history. It is a copy (ACP
+`session/fork`) so the original is never written to; `--in-place` opens the
+session itself (close it anywhere else first). A harness that cannot copy
+falls back to opening it in place, and says so. Session ids: `claude -r`
+lists Claude's, `grok sessions list` Grok's, `codex resume` Codex's.
 
 ## Roster
 

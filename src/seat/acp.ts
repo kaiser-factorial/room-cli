@@ -118,7 +118,14 @@ export class AcpSeat implements Seat {
       .client({ name: "room" })
       .onRequest(acp.methods.client.session.requestPermission, (ctx) => this.onPermission(ctx.params))
       .onNotification(acp.methods.client.session.update, (ctx) => {
-        if (!this.sid || ctx.params.sessionId === this.sid) this.updates.push(ctx.params);
+        if (this.sid && ctx.params.sessionId !== this.sid) return;
+        // Context use and commands are state, not part of a turn: kept whenever they come.
+        const u = ctx.params.update as { sessionUpdate: string; used?: number; size?: number; availableCommands?: Array<{ name: string; description?: string }> };
+        if (u.sessionUpdate === "usage_update" && typeof u.used === "number" && typeof u.size === "number") this.usage = { used: u.used, size: u.size };
+        if (u.sessionUpdate === "available_commands_update" && Array.isArray(u.availableCommands)) {
+          this.commands = u.availableCommands.map((c) => ({ name: c.name.replace(/^\//, ""), description: c.description ?? "" }));
+        }
+        this.updates.push(ctx.params);
       })
       .connect(stream);
 
@@ -213,6 +220,34 @@ export class AcpSeat implements Seat {
 
   get sessionId(): string | undefined {
     return this.sid;
+  }
+
+  /** Tokens in context and the window size, as the agent last reported them. */
+  usage?: { used: number; size: number };
+  /** Slash commands the agent advertises (without the slash). */
+  commands: Array<{ name: string; description: string }> = [];
+
+  /**
+   * A copy of a saved session (its history, a new id), so the original is
+   * never written to. Undefined when the agent cannot fork.
+   */
+  async forkSession(sessionId: string, cwd: string): Promise<string | undefined> {
+    const caps = this.caps as Record<string, unknown> | undefined;
+    const sessionCaps = (caps?.sessionCapabilities ?? {}) as Record<string, unknown>;
+    if (!sessionCaps.fork) return undefined;
+    try {
+      const res = (await this.agent().request(acp.methods.agent.session.fork, { sessionId, cwd, mcpServers: this.mcpServers() })) as {
+        sessionId: string;
+        modes?: acp.SessionModeState | null;
+        configOptions?: acp.NewSessionResponse["configOptions"];
+      };
+      this.newSessionResponse = { sessionId: res.sessionId, modes: res.modes ?? null, configOptions: res.configOptions ?? null } as acp.NewSessionResponse;
+      this.sid = res.sessionId;
+      this.updates.clear();
+      return res.sessionId;
+    } catch {
+      return undefined;
+    }
   }
 
   /** Session modes the agent advertised at session/new, if any. */

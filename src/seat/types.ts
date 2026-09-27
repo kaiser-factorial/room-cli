@@ -12,6 +12,9 @@ export interface SeatConfig {
   command: string;
   args?: string[];
   env?: Record<string, string>;
+  /** A harness session to bring in (its id), instead of a fresh one; `fork` copies it so the original is untouched. */
+  session?: string;
+  fork?: boolean;
   /** Model override, passed through when the adapter supports it. */
   model?: string;
   /** Role preset id from the web app's roles.ts, applied in the preamble. */
@@ -97,6 +100,12 @@ export interface Seat {
   newSession(cwd: string): Promise<string>;
   /** Reattach to a saved session. False when the harness cannot; the room then replays. */
   resumeSession?(sessionId: string, cwd: string): Promise<boolean>;
+  /** Open a copy of a saved session (new id, same history); undefined when the harness cannot. */
+  forkSession?(sessionId: string, cwd: string): Promise<string | undefined>;
+  /** Context use as the harness last reported it. */
+  readonly usage?: { used: number; size: number };
+  /** Slash commands the harness advertises, without the slash. */
+  readonly commands?: Array<{ name: string; description: string }>;
   /** Send one turn and stream its events until the agent stops. */
   prompt(text: string): AsyncIterable<SeatEvent>;
   /** Cancel the in-flight turn, if any. */

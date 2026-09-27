@@ -518,6 +518,9 @@ export class Room {
         else if (saved && seen !== undefined && !saved.startsWith("pending:") && seat.resumeSession) {
           resumed = await seat.resumeSession(saved, cwd);
           ui.status(resumed ? `${config.name}: resumed session ${saved}` : `${config.name}: could not resume; replaying the transcript`);
+        } else if (config.session) {
+          // A session from outside the room (last week's work): a fork by default, so the original stays as it was.
+          resumed = await this.bringIn(seat, config, cwd);
         }
         if (!resumed) {
           const sid = await seat.newSession(cwd);
@@ -537,6 +540,58 @@ export class Room {
         );
       }),
     );
+  }
+
+  /** A seat's context use as its harness last reported it. */
+  usageOf(name: string): { used: number; size: number } | undefined {
+    return this.seats.get(name)?.usage;
+  }
+
+  /** The slash commands a seat's harness advertises. */
+  commandsOf(name: string): Array<{ name: string; description: string }> {
+    return this.seats.get(name)?.commands ?? [];
+  }
+
+  /**
+   * Send one of a seat's own slash commands (`compact keep the adapter
+   * findings`) straight to its harness: not a room message, no preamble, and
+   * nothing in the transcript but a note that it happened. Only between turns.
+   */
+  async seatCommand(name: string, command: string): Promise<string> {
+    if (!this.seats.has(name)) throw new Error(`no seat ${name}`);
+    if (this.active.has(name) || this.starting.has(name) || this.background.has(name)) throw new Error(`${name} is busy; try when it is idle`);
+    const cmd = command.replace(/^\//, "").trim();
+    const word = cmd.split(/\s+/)[0];
+    const known = this.commandsOf(name);
+    if (known.length && !known.some((c) => c.name === word)) {
+      throw new Error(`${name} has no /${word}; it offers ${known.map((c) => `/${c.name}`).join(", ")}`);
+    }
+    const r = await this.collectTurn(name, `/${cmd}`, () => undefined);
+    if (r.failure) throw new Error(`${name} /${word}: ${r.failure}`);
+    this.transcript.append("room", "system", `${this.opts.human} ran /${cmd} on ${name}.`);
+    return r.text.trim();
+  }
+
+  /** Open a seat on a harness session made outside the room: forked unless `fork: false`, else resumed in place. */
+  private async bringIn(seat: Seat, config: SeatConfig, cwd: string): Promise<boolean> {
+    const { ui } = this.opts;
+    const id = config.session!;
+    if (config.fork !== false) {
+      const forked = await seat.forkSession?.(id, cwd);
+      if (forked) {
+        this.state.sessions[config.name] = forked;
+        ui.status(`${config.name}: brought in session ${id} as a copy (${forked}); the original is untouched`);
+        return true;
+      }
+      ui.status(`${config.name}: ${config.command} cannot copy a session; opening ${id} itself (close it anywhere else it is open)`);
+    }
+    if (seat.resumeSession && (await seat.resumeSession(id, cwd))) {
+      this.state.sessions[config.name] = id;
+      ui.status(`${config.name}: brought in session ${id}`);
+      return true;
+    }
+    ui.status(`${config.name}: could not open session ${id} (${config.command} may not support resuming over ACP); starting fresh`);
+    return false;
   }
 
   /**
